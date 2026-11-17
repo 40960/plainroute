@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+version: '2'
+
+run:
+  # Test files are not linted for unchecked errors. A test that ignores a Close error is
+  # normal, and a check that forces tests to verify nothing in order to satisfy it is
+  # worse than no check.
+  tests: false
+
+linters:
+  enable:
+    - errcheck
+    - staticcheck
+    - unused
+    - ineffassign
+    - misspell

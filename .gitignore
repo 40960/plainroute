@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Go
+/bin/
+/dist/
+*.test
+*.out
+coverage.out
+
+# Local configuration and secrets. Never commit a real config with keys. The example
+# config is the one file matching this pattern that belongs in the repository.
+/config.yaml
+/config.*.yaml
+!/config.example.yaml
+!.env.example
+.env
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+.local/

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+.git
+.github
+bin
+dist
+docs
+scripts
+*.log
+*.test
+coverage.out
+config.yaml
+config.*.yaml
+.env
+.local
+.idea
+.vscode

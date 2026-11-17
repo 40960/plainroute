@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Run as the gateway in front of the deployments the generated config describes. Keys come
+# from a .env file with 600 permissions, never from this file and never from the image.
+
+services:
+  plainroute:
+    build: .
+    image: plainroute
+    container_name: plainroute
+    restart: unless-stopped
+
+    # Loopback only. The api key gate is off by default, so a mapping on 0.0.0.0 would let any
+    # process on the network use the configured keys. With the gate on, one key is still not a
+    # network boundary: keep the port on loopback and tunnel it for a remote client.
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    env_file:
+      - .env
+
+    environment:
+      PLAINROUTE_CONFIG: /etc/plainroute/config.yaml
+
+    volumes:
+      - ./config.yaml:/etc/plainroute/config.yaml:ro
+
+    # A base_url of 127.0.0.1 inside the container is the container itself, not the host.
+    # When the upstream runs on the host, write host.docker.internal in the config file.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # Nothing is written at runtime, so the container can be read-only. /tmp exists as
+    # tmpfs for the health check and for Go's own scratch files.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # The image already runs as a named non-root user (uid 100). Nothing here changes it.
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+          pids: 64
+
+    stop_grace_period: 30s
+
+    # The health check lives in the image and is the live endpoint. Readiness is not checked
+    # here on purpose: a deployment that is cooling down is still a healthy container, and
+    # readiness is what a load balancer acts on.

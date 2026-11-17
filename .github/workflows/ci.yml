@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: gofmt, licence headers, vet, build, tests, race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "$out"
+            exit 1
+          fi
+
+      # The licence rule in CONTRIBUTING.md is stated as a fact about every file, so it is
+      # checked here rather than left to a reviewer.
+      - run: ./scripts/check-headers.sh
+
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./...
+
+      # The race detector needs cgo. It is the check that matters most here, because
+      # every counter, gauge and selection decision is touched from many goroutines.
+      - name: race
+        run: CGO_ENABLED=1 go test -race ./...
+
+  end-to-end:
+    name: end-to-end checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: ./scripts/e2e.sh
+
+  lint:
+    # Optional on purpose. A linter should not block a merge on a style opinion, so a
+    # failure here is reported without failing the run.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci-lint-action@v6
+        with:
+          version: v2.15
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/build-push-action@v6
+        with:
+          push: false
+          tags: plainroute:ci
