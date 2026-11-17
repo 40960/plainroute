@@ -19,6 +19,9 @@ endorsement or an affiliation.
 ## What it does
 
 - One upstream attempt per client request. Never more.
+- Load balancing across deployments of the same model: one selection per request,
+  `least_active` by default or `round_robin`, and ties keep config order. There is
+  no failover inside a single request.
 - Per-deployment cooldown: a deployment that returned a status code is taken out of the
   pool for the configured time, or for the upstream's own `Retry-After`, whichever is
   shorter than the configured maximum.
