@@ -9,6 +9,12 @@ the same model. It routes a request to a deployment, sends the body it received,
 the response bytes back, and reports what happened. It does not rewrite the response,
 does not retry on its own, and does not grow features that touch the streaming path.
 
+A deployment is one upstream target: a base URL, one key read from the environment,
+and its own endpoint path, headers and concurrency limit. The model name comes from
+the model entry, not from the deployment, so the deployments under one name all
+serve that name. Different names are not balanced against each other; a different
+model is reached only through a configured fallback.
+
 This project intentionally has a smaller scope and avoids modifying streaming responses
 whenever possible.
 
