@@ -290,6 +290,47 @@ routing:
 	}
 }
 
+// TestUnmappedStatusDoesNotCoolDown checks the other half of the rule: the window for an
+// error status comes from routing.cooldown.status, so a status with no entry has no window.
+// The target stays selectable, and the gateway sends no Retry-After of its own, because it
+// did not apply one.
+func TestUnmappedStatusDoesNotCoolDown(t *testing.T) {
+	h := newHarness(t, `
+routes:
+  m:
+    targets:
+      - name: a
+        model: m
+        base_url: https://fake.invalid/v1
+        api_key_env: KEY_A
+routing:
+  cooldown:
+    status: {429: 10s}
+    max: 30s
+`, config.Env{"KEY_A": "key-a"})
+
+	h.fake.Set("key-a", fakeupstream.Behavior{Status: 500, Body: `{"error":{"message":"internal"}}`})
+
+	resp, _ := h.post(chatBody("m"))
+	if resp.StatusCode != 500 {
+		t.Fatalf("status: got %d, want 500", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "" {
+		t.Errorf("no window was applied, but Retry-After says %q", got)
+	}
+	if strings.Contains(h.log.String(), "cooldown") {
+		t.Errorf("an unmapped status cooled the target down: %s", h.log.String())
+	}
+
+	resp, _ = h.post(chatBody("m"))
+	if resp.StatusCode != 500 {
+		t.Fatalf("second request: got %d", resp.StatusCode)
+	}
+	if h.fake.Attempts("key-a") != 2 {
+		t.Errorf("target a was not selectable after an unmapped status: %d attempts", h.fake.Attempts("key-a"))
+	}
+}
+
 func TestInvalidRetryAfterFallsBackToConfiguredCooldown(t *testing.T) {
 	h := newHarness(t, `
 routes:
