@@ -466,10 +466,16 @@ selected target, per-target `headers` override what the client sent for the same
 `X-Request-Id` is the id the gateway generated — or the client's own value, when the client
 sent one and it was 128 characters or shorter.
 
-Checked against a real run, not against the reading of the code: a request with
-`Cookie`, `X-Forwarded-For`, `Accept-Encoding: gzip`, `Connection: close` and an
-`Authorization` header reached the upstream with the first two dropped by the deny list, the
-caller key replaced, and the rest of the header set intact.
+Checked against a real run, not against the reading of the code: `scripts/e2e.sh` sends
+a request, the fake upstream records what arrived, and CI runs that script on every
+push. Each claim above is a comparison between what was sent and what was recorded, and
+the body is compared byte for byte with only the bytes of the `model` value replaced.
+
+Two things that check does not claim. It shows that the length the upstream is told
+matches the bytes it receives; it cannot say whether the gateway dropped the client's
+`Content-Length` or the transport sized the body, and that is not the same statement.
+And header-name canonicalisation is defensive: two Go clients write a name the same way,
+so no test with Go clients can prove it.
 
 ## Why retry is off by default
 
@@ -572,14 +578,27 @@ config uses has to be set — in the example config that is `EXAMPLE_API_KEY_1`,
 and the error names every missing variable at once, so a missing key is a startup
 failure rather than a request that fails later.
 
-The image is 28 MB, runs as a named non-root user, and has no write access anywhere. The
-health check is the live endpoint. Readiness is not checked inside the image, because a
-target that is cooling down is still a healthy container.
+The image runs as a named non-root user and has no write access anywhere. The health
+check is the live endpoint. Readiness is not checked inside the image, because a target
+that is cooling down is still a healthy container.
 
 The compose file is the shape this project runs in production: loopback-only mapping,
-read-only root filesystem, all capabilities dropped, `no-new-privileges`, a pid and memory
-limit, a 30 second stop grace, and keys from a `.env` file with 600 permissions. Verified by
-starting it for real: `health=healthy user=plainroute readonly=true caps=[ALL]`.
+read-only root filesystem, all capabilities dropped, `no-new-privileges`, a pid and
+memory limit, a 30 second stop grace, and keys from a `.env` file with 600 permissions.
+
+CI builds the image but has no docker daemon, so it cannot start a container and cannot
+read one. The size and the settings above are checked by hand on a machine that can:
+
+```bash
+docker compose up -d
+docker images --format '{{.Size}}' plainroute
+docker inspect --format 'health={{.State.Health.Status}} user={{.Config.User}}
+  readonly={{.HostConfig.ReadonlyRootfs}} caps={{json .HostConfig.CapDrop}}' plainroute
+```
+
+On this machine that prints `28 MB`, and `health=healthy user=plainroute readonly=true
+caps=[ALL]`. A change to one of these claims has to say what it was measured against,
+because nothing in CI can read a running container.
 
 Inside a container, `127.0.0.1` is the container itself. If the upstream runs on the host,
 write `host.docker.internal` in the config file (the compose file maps that name to the
@@ -633,6 +652,12 @@ Known and deliberate. These are not bugs to be fixed by adding complexity:
   does not close a frame it did not receive.
 - Single process, single binary, no clustering. State is per process: two gateway
   processes do not share cooldowns.
+- The request-path rules cover the chat endpoint only. The model list, `/healthz`,
+  `/readyz` and `/metrics` are answers the gateway writes itself, so nothing about them
+  travels to a target and no rule above covers them.
+- A response header is copied, not interpreted. The per-connection names are dropped and
+  everything else arrives as the target wrote it, including a name this project does not
+  know.
 
 ## Troubleshooting
 
@@ -695,10 +720,17 @@ the licence text, not legal advice.
 
 ```bash
 make fmt vet test race build headers
-./scripts/e2e.sh          # seven end-to-end cases against two real processes
+./scripts/e2e.sh          # end-to-end checks against two real processes; CI runs it too
 make bench                # load test, checked against the gateway's own counters
 python3 scripts/generate-config.py --keys 4 --out config.yaml   # model list from the live endpoint, snapshot fallback
 ```
+
+CI runs the unit tests, the end-to-end script and the licence-header check on every
+push. A claim CI cannot check is written as a measurement with the command that takes
+it, not as a fact: the image size and the container settings need a docker daemon, and
+the model list falls back to a snapshot only when the live endpoint gives nothing. Every
+end-to-end assertion here was shown to fail once by breaking the code it reads, so a
+green run means something.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [docs/architecture.md](docs/architecture.md), and
 [CHANGELOG.md](CHANGELOG.md).

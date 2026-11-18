@@ -132,9 +132,12 @@ the end-to-end script.
 - `cmd/bench`: load generator that measures what the client sees and then reads the gateway's
   own counters, failing when upstream attempts exceed client requests or when a gauge is
   still non-zero after the load stopped.
-- `scripts/e2e.sh`: the seven end-to-end cases against two real processes, including the api
-  key gate. It stops before starting if something is already listening on the ports it needs,
-  because a leftover process answers the checks instead of the one the script started.
+- `scripts/e2e.sh`: the end-to-end cases against two real processes — the api key gate,
+  the request path, the startup errors, both distribution strategies and the cooldown
+  window. It stops before starting if something is already listening on the ports it
+  needs, because a leftover process answers the checks instead of the one the script
+  started. A startup check runs under a timeout, so a build that stops reporting the
+  problem fails the check instead of leaving a process that never exits.
 - `scripts/generate-config.py`: builds a config for one upstream with N key slots from the live
   model endpoint, falling back to a snapshot file when that endpoint gives nothing. Keys are
   named by environment variable and never written into the generated file.

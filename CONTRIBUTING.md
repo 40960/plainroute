@@ -42,7 +42,10 @@ make fmt vet test race build
 ```
 
 `scripts/e2e.sh` starts the fake upstream and the gateway as two real processes and checks
-the behaviours this project exists for. It is the check that a unit test cannot replace.
+the behaviours this project exists for. It is the check that a unit test cannot replace,
+and CI runs it on every push. A startup check uses a timeout, because a build that stops
+reporting the problem leaves a process listening, and the script would hang instead of
+failing.
 
 ## Tests
 
@@ -52,8 +55,22 @@ the behaviours this project exists for. It is the check that a unit test cannot 
 - Do not weaken an assertion to make a test green. If a test fails, find out why: routing
   picks the quietest target, so an expected target is often not the one you
   guessed.
+- A check that cannot fail is not a check. Before an assertion is committed, break the
+  code it reads once and show that the check fails, then put it back. A needle that
+  matches whatever the implementation prints passes without proving anything.
 - The fake upstream is keyed by the API key value, because that is what identifies a
   target.
+
+## What CI can and cannot check
+
+CI runs the unit tests, the end-to-end script and the licence-header check, so a claim
+those run check is a fact on every push. A claim CI cannot check is written as a
+measurement, with the command that takes it, and says so.
+
+A workflow file cannot check itself: a file that fails to parse produces a run with no
+jobs and no logs, so no step inside it can report the parse failure. That is why the
+workflow definition is read by hand, and why the checks it runs are inside the job
+rather than assumed by it.
 
 ## Style
 
