@@ -31,9 +31,10 @@ endorsement or an affiliation.
 - Load balancing across targets behind one route name: one selection per request,
   `least_active` by default or `round_robin`, and ties keep config order. There is
   no failover inside a single request, and no balancing between two route names.
-- Per-target cooldown: a target that returned a status code is taken out of the
-  pool for the configured time, or for the upstream's own `Retry-After`, whichever is
-  shorter than the configured maximum.
+- Per-target cooldown: for an error status the window is `routing.cooldown.status[<code>]`
+  when the upstream did not send a `Retry-After`, and the value the upstream sent when it
+  did, clamped by `routing.cooldown.max`. A status with no entry, or an entry of 0, does not
+  cool a target down.
 - Model name mapping: the model name comes from the target that was picked, and the
   `model` field in the request body is the only field PlainRoute changes. It changes by
   splicing bytes into the original document rather than re-serialising it.
@@ -385,10 +386,17 @@ auth:
   12/0/0/0, because sequential traffic never overlaps and every request ties on "fewest in
   flight". If the limit you care about is per key, spread with `round_robin`; if it is per
   connection pool, `least_active` is the closer fit. Under real concurrency both converge.
-- Cooldown length comes from `routing.cooldown.status`, and a `Retry-After` from the
-  upstream wins when it is present. The value is clamped by `routing.cooldown.max` so a
-  hostile or broken upstream value cannot make a target unavailable for an
-  unreasonable time. An unparseable `Retry-After` falls back to the configured duration.
+- Cooldown for an error status is `routing.cooldown.status[<code>]` when the upstream sent
+  no `Retry-After`. When it sent one, that value wins, and `routing.cooldown.max` clamps it so
+  a hostile or broken value cannot make a target unavailable for an unreasonable time. The clamp
+  applies to the value the upstream sent, not to the configured duration, which is used as
+  written. An unparseable or non-positive `Retry-After` falls back to the configured duration.
+- A status code with no entry, or an entry of 0, does not cool a target down: the target stays
+  selectable, and the gateway sends no `Retry-After` because it applied no window. Nothing
+  configured means the default map, which is `429: 10s`.
+- A connection, response-header or stream idle failure has no `Retry-After` to read, so it uses
+  `routing.cooldown.timeout`. 0 disables it, and 0 is the default, which is why a connection
+  failure is a failed request rather than a target taken out of the pool.
 - When every target behind a route name is cooling, the gateway does not contact an
   upstream. It answers 429 with the OpenAI error shape and
   `code: all_targets_cooling_down`, and `Retry-After` is the recovery time of the target
