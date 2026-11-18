@@ -143,9 +143,17 @@ sends in the `model` field is logged as `requested` when it is not a configured 
 a label value is never removed from the registry: a client that sends a different string on
 every request would grow it without bound. Logging a name is safe, counting one is not.
 
-**`Retry-After` is clamped.** A hostile or broken upstream value cannot make a target
-unavailable for an unreasonable time, and the value the gateway forwards is the window it
-actually applied, not whatever the upstream printed.
+**The clamp on `Retry-After` is a re-check interval, not a way of disagreeing with the
+upstream.** A target is not contacted while it is cooling, so a `Retry-After` is never
+verified, and the clamp is the longest an unverified value can govern before that target
+is asked again and reality answers. It applies only to the value the upstream sent,
+never to a configured duration, and 0 turns it off, like the other two cooldown values,
+so an operator who wants to act on the upstream's word exactly can. When it fires it
+changes what the client is told to wait, which is the one place the gateway does not
+forward the upstream's word, so the default (15 minutes) sits above what a rate limit in
+force can plausibly state: it fires on values that cannot be true. With the clamp off, a
+false value governs until it expires, and only a process restart clears it, because a
+reload keeps target state.
 
 **The default cooldown is a prior, not a measurement.** `429: 10s` applies only when the
 upstream sent nothing usable, because when it sent a `Retry-After` that value wins. It cannot be

@@ -36,8 +36,9 @@ routing:
       403: 60s
       503: 15s
     # The clamp applies to the value the upstream sent, not to a configured duration.
-    # It has no off switch: 0 means this default, and a negative value is an error.
-    max: 5m
+    # 0 turns the clamp off, so a value from the upstream is used as written; absent
+    # means this default. A negative value is an error.
+    max: 15m
     timeout: 0s      # cools a target after a connection or idle failure; 0 disables
 
 # Off by default. The client owns backoff. When enabled, a retry only happens before any

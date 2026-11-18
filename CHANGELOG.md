@@ -50,6 +50,14 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   that gets balanced; two route names are never balanced against each other, and one reaches
   the other only through a configured fallback.
 
+- `routing.cooldown.max` can be turned off by writing 0, like the other two cooldown
+  values, and its default moved from 5 minutes to 15. A file that wrote `max: 0` meant
+  the default before, so it now behaves differently: a `Retry-After` from the upstream
+  is used as written. The reason for the clamp is that a target is never contacted while
+  it is cooling, so a `Retry-After` is never verified, and the clamp is the longest an
+  unverified value can govern before the target is asked again; the default is chosen so
+  it fires only on a value that cannot be true.
+
 ### Fixes
 
 - `plainroute_upstream_errors_total` help text named `status`, which that collector can never

@@ -31,10 +31,10 @@ endorsement or an affiliation.
 - Load balancing across targets behind one route name: one selection per request,
   `least_active` by default or `round_robin`, and ties keep config order. There is
   no failover inside a single request, and no balancing between two route names.
-- Per-target cooldown: for an error status the window is `routing.cooldown.status[<code>]`
-  when the upstream did not send a `Retry-After`, and the value the upstream sent when it
-  did, clamped by `routing.cooldown.max`. A status with no entry, or an entry of 0, does not
-  cool a target down.
+- Per-target cooldown: for an error status the window is
+  `routing.cooldown.status[<code>]` when the upstream did not send a `Retry-After`, and
+  the value the upstream sent when it did, clamped by `routing.cooldown.max`, which 0
+  turns off. A status with no entry, or an entry of 0, does not cool a target down.
 - Model name mapping: the model name comes from the target that was picked, and the
   `model` field in the request body is the only field PlainRoute changes. It changes by
   splicing bytes into the original document rather than re-serialising it.
@@ -301,7 +301,7 @@ routing:
       429: 10s
       401: 60s
       503: 15s
-    max: 5m
+    max: 5m                    # clamps a Retry-After; 0 turns the clamp off
     timeout: 30s                  # 0 disables cooling after a connection failure
 
 routes:
@@ -386,11 +386,12 @@ auth:
   12/0/0/0, because sequential traffic never overlaps and every request ties on "fewest in
   flight". If the limit you care about is per key, spread with `round_robin`; if it is per
   connection pool, `least_active` is the closer fit. Under real concurrency both converge.
-- Cooldown for an error status is `routing.cooldown.status[<code>]` when the upstream sent
-  no `Retry-After`. When it sent one, that value wins, and `routing.cooldown.max` clamps it so
-  a hostile or broken value cannot make a target unavailable for an unreasonable time. The clamp
-  applies to the value the upstream sent, not to the configured duration, which is used as
-  written. An unparseable or non-positive `Retry-After` falls back to the configured duration.
+- Cooldown for an error status is `routing.cooldown.status[<code>]` when the upstream
+  sent no `Retry-After`. When it sent one, that value wins unless the clamp is off (0),
+  and `routing.cooldown.max` clamps it so a hostile or broken value cannot make a target
+  unavailable for an unreasonable time. The clamp applies to the value the upstream
+  sent, not to the configured duration, which is used as written. An unparseable or
+  non-positive `Retry-After` falls back to the configured duration.
 - A status code with no entry, or an entry of 0, does not cool a target down: the target stays
   selectable, and the gateway sends no `Retry-After` because it applied no window. Nothing
   configured means the default map, which is `429: 10s`. That value is a prior for the silent
@@ -409,14 +410,22 @@ auth:
 - A connection, response-header or stream idle failure has no `Retry-After` to read, so it uses
   `routing.cooldown.timeout`. 0 disables it, and 0 is the default, which is why a connection
   failure is a failed request rather than a target taken out of the pool.
-- `routing.cooldown.max` has a default of 5 minutes and has no off switch. Writing 0 means the
-  default, not "no clamp", and a negative value is a startup error. The other two cooldown
-  values do have an off: a status entry of 0 means that status does not cool a target, and
-  `timeout` of 0 disables cooling after a connection or idle failure. Only the clamp cannot be
-  turned off, because it is the part that protects the pool from an upstream value. Checked on a
-  real run: `max: 0s` with an upstream `Retry-After: 36000` applied 300 seconds, and
-  `status: {429: 10m}` with `max: 5m` applied 600, because the clamp does not touch a configured
-  duration.
+- `routing.cooldown.max` clamps a `Retry-After` from the upstream, and 0 turns it off,
+  like the other two cooldown values: a status entry of 0 means that status does not
+  cool a target, and `timeout` of 0 disables cooling after a connection or idle failure.
+  A negative value is a startup error, and an absent `max` means the default, which is
+  15 minutes. The clamp exists because a target is never contacted while it is cooling,
+  so a `Retry-After` is never verified: the clamp is the longest an unverified value can
+  govern before that target is asked again and reality answers. 15 minutes sits above
+  what a rate limit in force can plausibly state, so it fires on values that cannot be
+  true. With the clamp off, a false value governs until it expires, and nothing but a
+  process restart clears it, because a reload keeps target state. The clamp does not
+  touch a configured duration: `status: {429: 10m}` with `max: 5m` applied 600, checked
+  on a real run. Checked with the same run shape, single target: an upstream
+  `Retry-After: 7200` against `max: 6s` applied 6 seconds, and the request just after
+  the window was answered 200 by that same key, so the clamp is when the claim gets
+  checked again. With the default the same claim governs for 15 minutes instead of the 2
+  hours the upstream asked for.
 - When every target behind a route name is cooling, the gateway does not contact an
   upstream. It answers 429 with the OpenAI error shape and
   `code: all_targets_cooling_down`, and `Retry-After` is the recovery time of the target
