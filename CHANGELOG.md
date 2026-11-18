@@ -122,6 +122,20 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
 
 ### Tools
 
+- `.github/workflows/release.yml`: builds for linux/amd64 and linux/arm64, pushes to GHCR,
+  writes an SPDX SBOM, signs the image with cosign in keyless mode against the run's
+  identity for both the tag and the immutable digest, and publishes a GitHub Release
+  that names the version, the commit, the digest and the two verify commands a reader
+  runs. There is no signing key in this repository, so the signature is bound to the run
+  that made the build.
+- A workflow file cannot check itself, so this one was read by hand and each reading was
+  shown to fail once by breaking the file: the parse, the platform list, every reference
+  against the step ids and job outputs the file declares, the permissions against what
+  the steps claim to need, the quoting inside each run block, the duplicate-key rule,
+  and the rule that the release cannot attach a file its own job never created. What the
+  file cannot check — image size, the container settings, the health check answering
+  /healthz — is written in the README as a measurement with the command that takes it.
+
 - `scripts/smoke-openai-compatible.sh` checks a live OpenAI-compatible endpoint the way
   a client sees it: the model list, a non-stream answer, a streamed answer, a tool call,
   a top-level field this project does not define, an error answer, and one optional

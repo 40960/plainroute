@@ -1,0 +1,226 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: release
+
+# What this does: builds the image for linux/amd64 and linux/arm64, pushes it to GHCR, writes an
+# SPDX SBOM, signs the image with cosign in keyless mode against this run's identity, and publishes
+# a GitHub Release that names the version, the commit, the immutable digest and the commands a
+# reader runs to verify what they pulled.
+#
+# There is no signing key in this repository. Keyless signing binds the signature to the identity of
+# the workflow run that made it, so a build made anywhere else gives a different signature, and that
+# is what a reader is checking when they verify an image.
+#
+# A workflow file cannot check itself: a file that fails to parse produces a run with no jobs and no
+# logs, so no step inside it can report the parse failure. That is why this file is read by hand, and
+# why every claim below is checked by a step inside the job instead of assumed by it.
+#
+# What this job cannot check is said as a measurement: the image size, the container settings and the
+# health check answering /healthz need a docker daemon on a machine, and the verification commands
+# below are the ones that take those numbers. Nothing here contacts a provider.
+#
+# Tags that trigger this are v0.0.0 shaped: a pre-release name such as v0.2.0-rc1 does not match, so
+# a release candidate is published by a manual run with TAG, which is also how the names step is
+# exercised without a tag.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write # the release
+  packages: write # the image on ghcr.io
+  id-token: write # cosign keyless signing against this run's identity
+
+jobs:
+  build:
+    name: build, push, SBOM, sign
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.names.outputs.image }}
+      tag: ${{ steps.names.outputs.tag }}
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: names
+        id: names
+        run: |
+          # GHCR rejects an uppercase owner or image name, and the failure only appears at push
+          # time, so the name is normalised here rather than carried from the repository name.
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/plainroute"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            # A manual run has no tag. It publishes under the name it was given and refuses to guess
+            # one, so a run cannot quietly overwrite the release image.
+            tag=${TAG:-}
+            if [ -z "$tag" ]; then
+              echo 'TAG is required for a manual run' >&2
+              exit 1
+            fi
+          else
+            tag=$GITHUB_REF_NAME
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: build and push for both platforms
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.names.outputs.image }}:${{ steps.names.outputs.tag }}
+          image_id: true
+          # Provenance is written as an attestation by the builder, so it is bound to the image id the
+          # push produced rather than to a file a later step could have replaced.
+          provenance: true
+
+      - name: the pushed image carries both platforms
+        id: digest
+        run: |
+          # A manifest list is the only thing that can say this. A build that quietly produced one
+          # platform would still report success.
+          ref="${{ steps.names.outputs.image }}:${{ steps.names.outputs.tag }}"
+          out=$(docker buildx imagetools inspect "$ref" --format '{{.Digest}} {{.Platform}}')
+          echo "$out"
+          for platform in linux/amd64 linux/arm64; do
+            if ! grep -q "$platform" <<< "$out"; then
+              echo "no $platform in the manifest list" >&2
+              exit 1
+            fi
+          done
+          digest=$(docker buildx imagetools inspect "$ref" --format '{{json .}}' \
+            | sed -n 's/.*"digest":"sha256:\([a-f0-9]\{64\}\)".*/\1/p')
+          if [ -z "$digest" ]; then
+            echo 'the pushed manifest has no digest to name' >&2
+            exit 1
+          fi
+          echo "digest=sha256:$digest" >> "$GITHUB_OUTPUT"
+
+      - name: SBOM
+        uses: anchore/sbom-action@v0.17.0
+        with:
+          image: ${{ steps.names.outputs.image }}:${{ steps.names.outputs.tag }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: the SBOM is an SPDX document and not an empty file
+        run: |
+          # A file that exists is not a document. This parses it.
+          if [ ! -s sbom.spdx.json ]; then
+            echo 'the SBOM is empty' >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          d = json.load(open('sbom.spdx.json'))
+          if not str(d.get('spdxVersion', '')).startswith('SPDX'):
+              raise SystemExit('not an SPDX document: %r' % d.get('spdxVersion'))
+          components = [c for c in d.get('packages', []) if c.get('name')]
+          if not components:
+              raise SystemExit('the SBOM names no components')
+          print('SPDX %s, %d components' % (d['spdxVersion'], len(components)))
+          PY
+
+      - name: sign and attest, keyless
+        run: |
+          # cosign is on the GitHub runner image. If it is not, this says so rather than downloading
+          # a binary it cannot verify.
+          if ! command -v cosign > /dev/null; then
+            echo 'cosign is not on this runner' >&2
+            exit 1
+          fi
+          image='${{ steps.names.outputs.image }}'
+          tag='${{ steps.names.outputs.tag }}'
+          # The signature and the attestation are attached to the tag, because a tag is what a reader
+          # names. They are attached to the digest as well, so a reader who pulls by digest — the only
+          # immutable name — can verify the same document.
+          cosign sign --yes "$image:$tag"
+          cosign sign --yes "$image@${{ steps.digest.outputs.digest }}"
+          cosign attest --yes --type sbom --predicate sbom.spdx.json "$image:$tag"
+          cosign attest --yes --type sbom --predicate sbom.spdx.json \
+            "$image@${{ steps.digest.outputs.digest }}"
+
+      - name: the signature verifies against this run
+        run: |
+          # The only step here that can show a signature is readable: a sign that wrote nothing would
+          # report success. The identity is this workflow file, so this is the same check a reader
+          # runs, with the repository named.
+          if ! command -v cosign > /dev/null; then
+            echo 'cosign is not on this runner' >&2
+            exit 1
+          fi
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${{ steps.names.outputs.tag }}" \
+            --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
+            '${{ steps.names.outputs.image }}@${{ steps.digest.outputs.digest }}' \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin)[0]; print(d["critical"]["identity"], d["payload"]["optionalPayload"])'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbom
+
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          files: sbom.spdx.json
+          body: |
+            ## What is published
+
+            | | |
+            | --- | --- |
+            | Image | `${{ needs.build.outputs.image }}:${{ needs.build.outputs.tag }}` |
+            | Immutable digest | `${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}` |
+            | Platforms | `linux/amd64`, `linux/arm64` |
+            | Commit | `${{ github.sha }}` |
+            | Licence | AGPL-3.0-only |
+
+            Pull the digest, not the tag: a tag on GHCR can be moved by a later push, a digest cannot.
+
+            ## Verify
+
+            Run these from a machine with cosign. They are the commands that turn the claims above
+            into numbers on your own machine.
+
+            ```bash
+            cosign verify \
+              --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@refs/tags/${{ needs.build.outputs.tag }}' \
+              --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
+              '${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}'
+
+            cosign verify-attestation --type sbom \
+              --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@refs/tags/${{ needs.build.outputs.tag }}' \
+              --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
+              '${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}'
+            ```
+
+            The signing identity is a workflow run, not a key: a build made somewhere else gives a
+            different signature, which is the point of checking it.
+
+            ## Run
+
+            See the README. The image needs a config file and the environment variables it names; keys
+            are never inside the image.
