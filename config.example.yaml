@@ -35,7 +35,9 @@ routing:
       401: 60s
       403: 60s
       503: 15s
-    max: 5m          # clamps a Retry-After from the upstream
+    # The clamp applies to the value the upstream sent, not to a configured duration.
+    # It has no off switch: 0 means this default, and a negative value is an error.
+    max: 5m
     timeout: 0s      # cools a target after a connection or idle failure; 0 disables
 
 # Off by default. The client owns backoff. When enabled, a retry only happens before any

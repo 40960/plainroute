@@ -409,6 +409,14 @@ auth:
 - A connection, response-header or stream idle failure has no `Retry-After` to read, so it uses
   `routing.cooldown.timeout`. 0 disables it, and 0 is the default, which is why a connection
   failure is a failed request rather than a target taken out of the pool.
+- `routing.cooldown.max` has a default of 5 minutes and has no off switch. Writing 0 means the
+  default, not "no clamp", and a negative value is a startup error. The other two cooldown
+  values do have an off: a status entry of 0 means that status does not cool a target, and
+  `timeout` of 0 disables cooling after a connection or idle failure. Only the clamp cannot be
+  turned off, because it is the part that protects the pool from an upstream value. Checked on a
+  real run: `max: 0s` with an upstream `Retry-After: 36000` applied 300 seconds, and
+  `status: {429: 10m}` with `max: 5m` applied 600, because the clamp does not touch a configured
+  duration.
 - When every target behind a route name is cooling, the gateway does not contact an
   upstream. It answers 429 with the OpenAI error shape and
   `code: all_targets_cooling_down`, and `Retry-After` is the recovery time of the target
