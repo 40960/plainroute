@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 #
 # End-to-end check against a real running gateway and a real running fake upstream.
-# This is not a unit test: it starts both processes, sends real HTTP, and reads the
-# gateway's metrics page back. Every behaviour the project exists for must hold here.
+# This is not a unit test: it starts both processes, sends real HTTP, reads the gateway's
+# metrics page back, and reads what the fake upstream recorded about the request it received.
+# Every behaviour the project exists for must hold here.
 #
 # Usage: ./scripts/e2e.sh
 set -u
@@ -13,10 +14,15 @@ BIN="$ROOT/bin"
 WORK=$(mktemp -d)
 FAIL=0
 CHECKS=0
+EXTRA_PIDS=()
 
 cleanup() {
   kill "${FAKE_PID:-}" "${GATEWAY_PID:-}" "${GATE_PID:-}" 2>/dev/null
   wait "${FAKE_PID:-}" "${GATEWAY_PID:-}" "${GATE_PID:-}" 2>/dev/null
+  for pid in ${EXTRA_PIDS[@]+"${EXTRA_PIDS[@]}"}; do
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+  done
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -55,6 +61,16 @@ stats() { curl -s "http://127.0.0.1:8091/stats" > "$WORK/stats.json"; }
 count() { grep -o "\"$1\":[0-9]*" "$WORK/stats.json" | head -1 | cut -d: -f2; }
 total() { grep -o '"total":[0-9]*' "$WORK/stats.json" | cut -d: -f2; }
 
+# What the upstream received for a key is one line per fact, which is how a check can
+# tell what the gateway forwarded from what the client sent. A key that was never sent says
+# so, so a check for an absent header cannot pass because the record is empty.
+last() { curl -s "http://127.0.0.1:8091/last?key=$1"; }
+field() { last "$1" | sed -n "s/^$2=//p" | head -1; }
+
+send() { # url, body file, output file; prints the status code
+  curl -s -o "$3" -w '%{http_code}' -H 'Content-Type: application/json' -d @"$2" "$1"
+}
+
 post() { # model, output file; prints the status code
   curl -s -o "$2" -w '%{http_code}' -H 'Content-Type: application/json' \
     -d "{\"model\":\"$1\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"prompt-zq\"}]}" \
@@ -67,8 +83,9 @@ go build -o "$BIN/plainroute" ./cmd/plainroute
 go build -o "$BIN/plainroute-fakeupstream" ./cmd/fakeupstream
 go build -o "$BIN/plainroute-bench" ./cmd/bench
 
-# A process left over from an earlier run answers the checks instead of the one this script
-# starts, so a run can pass for the wrong reason or fail for one that is not its own.
+# A process left over from an earlier run answers the checks instead of the one this
+# script starts, so a run can pass for the wrong reason or fail for one that is not its
+# own.
 for port in 8080 8091 8092; do
   if (exec 9<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null; then
     printf 'something is already listening on 127.0.0.1:%s. Stop it before running this script.\n' "$port" >&2
@@ -103,6 +120,23 @@ cat > "$WORK/behaviors.json" <<'JSON'
     "status": 200,
     "sse": ["data: {\"delta\":{\"content\":\"first\"}}\n\n"],
     "wait_for_cancel": true
+  },
+  "e2e-plain": {
+    "status": 200,
+    "body": "{\"object\":\"chat.completion\",\"choices\":[]}"
+  },
+  "e2e-dist-1": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-dist-2": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-dist-3": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-dist-4": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-rafar": {
+    "status": 429,
+    "headers": { "Retry-After": "7200" },
+    "body": "{\"error\":{\"message\":\"rate limited\",\"type\":\"rate_limit_error\"}}"
+  },
+  "e2e-500": {
+    "status": 500,
+    "body": "{\"error\":{\"message\":\"server error\",\"type\":\"server_error\"}}"
   }
 }
 JSON
@@ -115,6 +149,10 @@ routing:
   cooldown:
     status: {429: 10s}
     max: 60s
+headers:
+  mode: deny
+  deny: [Cookie, X-Forwarded-For]
+  forward_request_id: true
 routes:
   stream:
     targets:
@@ -162,9 +200,64 @@ routes:
         model: cancel
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_CANCEL
+  forwardcheck:
+    targets:
+      # The model here is longer than the route name, so the body the upstream is told about
+      # is not the length the client counted: that is the case the Content-Length check needs.
+      - name: forwarder
+        model: e2e-forward-model
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_PLAIN
+        headers:
+          X-Zq-Target: from-target
+  forwardpath:
+    targets:
+      - name: pathed
+        model: forwardpath
+        base_url: http://127.0.0.1:8091/v1
+        path: /zq-endpoint
+        api_key_env: E2E_PLAIN
+  gzipcheck:
+    targets:
+      - name: gzipped
+        model: gzipcheck
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_GZIP
+  distleast:
+    targets:
+      - name: d1
+        model: distleast
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_DIST_1
+      - name: d2
+        model: distleast
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_DIST_2
+      - name: d3
+        model: distleast
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_DIST_3
+      - name: d4
+        model: distleast
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_DIST_4
+  rafar:
+    targets:
+      - name: far-future
+        model: rafar
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_RAFAR
+  unmapped:
+    targets:
+      - name: not-in-the-map
+        model: unmapped
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_500
 YAML
 
 export E2E_STREAM=e2e-stream E2E_429=e2e-429 E2E_TOOL=e2e-tool E2E_CANCEL=e2e-cancel
+export E2E_PLAIN=e2e-plain E2E_GZIP=e2e-gzip E2E_RAFAR=e2e-rafar E2E_500=e2e-500
+export E2E_DIST_1=e2e-dist-1 E2E_DIST_2=e2e-dist-2 E2E_DIST_3=e2e-dist-3 E2E_DIST_4=e2e-dist-4
 
 "$BIN/plainroute-fakeupstream" -listen 127.0.0.1:8091 -behaviors "$WORK/behaviors.json" > "$WORK/fake.log" 2>&1 &
 FAKE_PID=$!
@@ -246,8 +339,9 @@ has "the active counter came back to zero" 'plainroute_active_requests[[:space:]
 has "in flight is back to zero" 'plainroute_in_flight_requests[[:space:]]\+0' "$(cat "$WORK/bench.txt")"
 not_has "nothing panicked in the gateway" 'panic' "$(cat "$WORK/gateway.log")"
 not_has "no API key value appears in the gateway log" 'e2e-429' "$(cat "$WORK/gateway.log")"
-# The prompt content uses letters that are not hex digits: a request id is hex, so a content string
-# that is hex-valid can appear inside one by chance, which made this check flaky.
+# The prompt content uses letters that are not hex digits: a request id is hex, so a
+# content string that is hex-valid can appear inside one by chance, which made this
+# check flaky.
 not_has "no prompt content appears in the gateway log" 'prompt-zq' "$(cat "$WORK/gateway.log")"
 
 printf '\n6. client disconnect: the upstream request is cancelled\n'
@@ -305,5 +399,99 @@ not_has "the caller key value does not appear in the log" 'e2e-caller' "$(cat "$
 kill "$GATE_PID" 2>/dev/null
 wait "$GATE_PID" 2>/dev/null
 
+printf '\n8. what the gateway forwards, read back from what the upstream received\n'
+# The prompt content and the header values in this case use letters that are not hex
+# digits: a request id is hex, so a needle that is hex-valid can appear inside one by
+# chance.
+sent='{"model":"forwardcheck", "zq_unknown":{"kept":true}, "temperature":0.5, "stream":false}'
+fwd='{"model":"e2e-forward-model", "zq_unknown":{"kept":true}, "temperature":0.5, "stream":false}'
+printf '%s' "$sent" > "$WORK/sent.json"
+
+status=$(curl -s -o "$WORK/fwd.txt" -w '%{http_code}' -H 'Content-Type: application/json' \
+  -H 'Cookie: zq-session-value' -H 'X-Forwarded-For: 203.0.113.7' -H 'Connection: close' \
+  -H 'Accept-Encoding: gzip' -H 'X-Zq-Client-Header: kept' -H 'X-Zq-Target: from-client' \
+  -H 'X-Request-Id: zq-client-id' -d @"$WORK/sent.json" \
+  'http://127.0.0.1:8080/v1/chat/completions?zq_query=1')
+check "the forwarded request succeeded" "200" "$status"
+record=$(last e2e-plain)
+# A check for an absent header can pass because nothing arrived, so the guard is that
+# the record is a request, not an empty record.
+has "the record is a request this case sent, not an empty record" 'method=POST' "$record"
+
+check "the body arrives as the bytes it was sent, with only the model value replaced" \
+  "$fwd" "$(field e2e-plain body)"
+check "the client's query string does not travel" "" "$(field e2e-plain query)"
+
+# The recorded length is what the sender framed the request with, so it must match the
+# body that arrived. The two differ here because the target model is longer than the
+# route name, which is what lets the check tell them apart. It cannot tell whether the
+# gateway dropped the client's Content-Length or the transport sized the body, because
+# Go sizes a body it can measure: the check states the invariant a reader cares about,
+# that the length the upstream is told matches the bytes it receives.
+check "the length the upstream was told is the length of the body that arrived" \
+  "${#fwd}" "$(field e2e-plain content_length)"
+CHECKS=$((CHECKS + 1))
+if [ "${#fwd}" != "${#sent}" ]; then
+  pass "the forwarded length is not the length the client counted, so the check can tell them apart"
+else
+  fail "the two lengths are equal, so the length check proves nothing"
+fi
+
+not_has "the deny list drops Cookie" 'Cookie=' "$record"
+not_has "the deny list drops X-Forwarded-For" 'X-Forwarded-For=' "$record"
+not_has "hop-by-hop Connection is dropped whatever the config says" 'Connection=' "$record"
+has "a header outside the deny list travels" 'X-Zq-Client-Header=kept' "$record"
+has "Accept-Encoding travels as the client wrote it" 'Accept-Encoding=gzip' "$record"
+has "Authorization is the key configured for the target, not the caller's" \
+  'Authorization=Bearer e2e-plain' "$record"
+has "per-target headers override what the client sent for the same name" \
+  'X-Zq-Target=from-target' "$record"
+has "a request id within the limit is the client's own value" 'X-Request-Id=zq-client-id' "$record"
+
+# An id over the limit is not forwarded: the gateway generates one, and a generated id
+# is hex, so the needle here is deliberately not hex.
+long=$(printf 'zq%.0s' {1..70})
+curl -s -o /dev/null -H 'Content-Type: application/json' -H "X-Request-Id: $long" \
+  -d @"$WORK/sent.json" http://127.0.0.1:8080/v1/chat/completions > /dev/null
+record=$(last e2e-plain)
+not_has "an id longer than 128 characters is not forwarded" "$long" "$record"
+has "the gateway generated an id instead" 'X-Request-Id=[0-9a-f]\{16\}' "$record"
+
+# The client's path is not used either: the upstream URL is the target's base URL plus
+# its own endpoint.
+printf '%s' '{"model":"forwardpath", "zq_unknown":1}' > "$WORK/path.json"
+send http://127.0.0.1:8080/v1/chat/completions "$WORK/path.json" "$WORK/path-out.txt" > /dev/null
+check "the path that travels is the target's endpoint, not the client's" \
+  "/v1/zq-endpoint" "$(field e2e-plain path)"
+
+# A compressed body is not decompressed: the gateway requires JSON text, so gzip bytes
+# are a parse failure and nothing reaches the upstream. The encoding has to be
+# announced, otherwise this only checks that unparseable bytes are rejected, which is a
+# different claim.
+printf '%s' '{"model":"gzipcheck", "zq_unknown":1}' > "$WORK/gzip-body.json"
+gzip -c "$WORK/gzip-body.json" > "$WORK/sent.gz"
+status=$(curl -s -o "$WORK/gzip.txt" -w '%{http_code}' -H 'Content-Type: application/json' \
+  -H 'Content-Encoding: gzip' --data-binary @"$WORK/sent.gz" \
+  http://127.0.0.1:8080/v1/chat/completions)
+check "a compressed body is rejected rather than decompressed" "400" "$status"
+has "and the error is invalid_json" '"code":"invalid_json"' "$(cat "$WORK/gzip.txt")"
+stats
+c=$(count e2e-gzip)
+check "nothing reached the upstream for that request" "0" "${c:-0}"
+
+# A stream response has no Content-Length: the gateway cannot know its length in
+# advance, so a stream that ends early is not described by a number that is wrong.
+curl -s -D "$WORK/stream-headers.txt" -o "$WORK/stream-body.txt" -H 'Content-Type: application/json' \
+  -d '{"model":"stream","stream":true,"messages":[{"role":"user","content":"prompt-zq"}]}' \
+  http://127.0.0.1:8080/v1/chat/completions > /dev/null
+has "the stream response is framed so a length cannot be wrong" 'Transfer-Encoding: chunked' \
+  "$(cat "$WORK/stream-headers.txt")"
+not_has "and no Content-Length is claimed for it" 'Content-Length:' "$(cat "$WORK/stream-headers.txt")"
+
+
 printf '\n%d checks: %s\n' "$CHECKS" "$([ "$FAIL" = 0 ] && echo 'all passed' || echo 'failures')"
 exit "$FAIL"
+
+
+
+
