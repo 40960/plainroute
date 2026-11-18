@@ -75,19 +75,130 @@ go build -o bin/plainroute ./cmd/plainroute
 cp config.example.yaml config.yaml
 export EXAMPLE_API_KEY_1=...
 export EXAMPLE_API_KEY_2=...
+export LOCAL_KEY=...        # the example config has a second route named local
 ./bin/plainroute -config config.yaml
 ```
 
+Every name the config uses has to be set: `api_key_env` names an environment variable.
+A config that references an unset one is a startup failure, not a request that fails
+later. The example config uses three names, so the quick start exports three.
+
 ```bash
-curl -s http://127.0.0.1:8080/healthz
+curl -s http://127.0.0.1:8080/healthz            # ok
 curl -s http://127.0.0.1:8080/v1/models
 curl -s http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"demo","stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
+The name in the `model` field here is a route name (`demo`), not a model name. What the
+example config prints, from a real run:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"id": "demo", "object": "model", "created": 1794982949, "owned_by": "plainroute",
+     "models": ["provider/model-one"], "targets": 2},
+    {"id": "local", "object": "model", "created": 1794982949, "owned_by": "plainroute",
+     "models": ["qwen3:8b"], "targets": 1}
+  ]
+}
+```
+
+`created` is the process start time, the same number on every entry. `models` is what sits inside
+the route; the sendable name is `id`.
+
+If you do not want to point it at a real provider, `./scripts/e2e.sh` runs the whole set of
+behaviours against the fake upstream as two real processes, prints one line per check, and
+ends with a summary.
+
 Keys are read from the environment. Nothing that looks like a secret belongs in a config
 file, and the gateway never writes a key into a log line.
+
+## How one request works
+
+PlainRoute is a messenger, not a chef. The body it received goes out, and the answer
+it gets comes back. Five things happen:
+
+1. The `model` field is read as a route name, which selects one row of the table. A
+   row is the set of targets that can answer that name.
+2. One target in that row is picked: the one with the fewest requests in flight, or
+   the next one in order, and a tie keeps the order the config lists.
+3. The body goes out once. Only the bytes of the `model` value change, replaced in
+   place with the model of the target that was picked; the document is not rebuilt.
+4. The answer is copied back chunk by chunk and flushed per chunk. Nothing is parsed or
+   re-formed, so the bytes the upstream produced are the bytes the client receives.
+5. What is recorded is a routing fact: the route, the target, the status, the timings,
+   the byte count.
+
+A target that answered badly is taken out of the pool for the *next* request, not for
+this one: this request ends with the answer it already got. When every target in the
+row is out of the pool, the gateway answers from its own state instead of knocking,
+429 with `code: all_targets_cooling_down`.
+
+### Watch one request go through, without a provider
+
+The fake upstream answers with fixed frames on fixed paths, so the whole path can be
+watched without a real key. The value of `DEMO_KEY` is what selects its behaviour,
+because a key is what identifies a target:
+
+```bash
+go build -o bin/fakeupstream ./cmd/fakeupstream
+./bin/fakeupstream &            # on 127.0.0.1:8091
+
+cat > demo.yaml <<'YAML'
+routes:
+  demo:
+    targets:
+      - name: account-1
+        model: provider/model-one
+        base_url: http://127.0.0.1:8091/stream
+        api_key_env: DEMO_KEY
+YAML
+
+DEMO_KEY=anyvalue ./bin/plainroute -config demo.yaml &
+```
+
+With both running, send one request:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"demo","stream":true,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+The client sent the route name `demo`, and what comes back is the three frames the
+upstream produced, unchanged:
+
+```text
+data: {"object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}
+
+data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}
+
+data: [DONE]
+```
+
+The log line for that request, from a real run of the commands above, wrapped here for
+reading:
+
+```json
+{"time":"2026-11-18T06:27:11.347272225Z","level":"INFO","msg":"request_completed",
+ "request_id":"1576cb8152d90e00","route":"demo","model":"provider/model-one",
+ "target":"account-1","status":200,"stream":true,"ttft_ms":0,"duration_ms":0,
+ "bytes":180,"active":1}
+```
+
+`route` is the name the client sent, `model` is the model of the target that answered,
+and `bytes` is what was copied. The upstream counted exactly one attempt for that key,
+which is the promise the project makes:
+
+```bash
+curl -s http://127.0.0.1:8091/stats
+# {"attempts":{"anyvalue":1},"cancelled":null,"total":1}
+```
+
+One client request, one upstream request.
 
 ## Route names and model names
 
@@ -332,6 +443,14 @@ The `route` label is the route a request resolved to, or `none` when the gateway
 before any route was in play. It is never a value taken from client input: the name a client
 sends in the `model` field is logged as `requested` rather than counted, because a label value
 is never removed from the registry and a client can send any string.
+
+The `kind` on `plainroute_upstream_errors_total` is one of `build_request`, `transport`,
+`timeout`, `stream_idle`, `client_gone`. Two values a reader might expect are not among them:
+a request that reached the upstream and came back with an error status is counted by
+`upstream_attempts_total` with its status class, because the upstream did answer, and a
+response cap is a reason on `plainroute_stream_aborts_total`, not an upstream failure. The log
+carries `kind` on two events, `stream_ended_early` and `upstream_request_failed`, and there its
+values are `transport`, `timeout`, `stream_idle`, `client_gone`.
 
 `requests_total` and `upstream_attempts_total` are kept separately on purpose. With retry
 disabled they should be the same number for proxied requests, and the difference is exactly
