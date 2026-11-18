@@ -31,8 +31,8 @@ routes:
 	if cfg.Routing.Cooldown.Status[429].Std() != 10*time.Second {
 		t.Errorf("429 cooldown: got %s, want 10s", cfg.Routing.Cooldown.Status[429])
 	}
-	if cfg.Routing.Cooldown.Max.Std() != 5*time.Minute {
-		t.Errorf("cooldown max: got %s, want 5m", cfg.Routing.Cooldown.Max)
+	if cfg.Routing.Cooldown.MaxStd() != 15*time.Minute {
+		t.Errorf("cooldown max: got %s, want 15m", cfg.Routing.Cooldown.MaxStd())
 	}
 	if cfg.Timeouts.Connect.Std() != 10*time.Second || cfg.Timeouts.ResponseHeader.Std() != 60*time.Second {
 		t.Errorf("timeouts: got connect %s, response_header %s", cfg.Timeouts.Connect, cfg.Timeouts.ResponseHeader)
@@ -58,6 +58,47 @@ routes:
 
 	if got := cfg.Routes["demo"].Targets[0].APIKey; got != "test-key" {
 		t.Errorf("api key: got %q, want test-key", got)
+	}
+}
+
+// TestCooldownMaxZeroMeansNoClamp is the off switch. The other two cooldown values already use 0
+// as off, so max does too. 0 cannot be the default, because then the default would be the thing
+// it is meant to switch off, which is why absent and 0 are different values here.
+func TestCooldownMaxZeroMeansNoClamp(t *testing.T) {
+	cfg, err := Parse([]byte(`
+routing:
+  cooldown:
+    max: 0s
+routes:
+  m:
+    targets:
+      - name: a
+        model: m
+        base_url: https://api.example.com/v1
+        api_key_env: K
+`), Env{"K": "x"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.Routing.Cooldown.MaxStd() != 0 {
+		t.Errorf("max 0: got %s, want 0 so a value from the upstream is used as written",
+			cfg.Routing.Cooldown.MaxStd())
+	}
+
+	_, err = Parse([]byte(`
+routing:
+  cooldown:
+    max: -1s
+routes:
+  m:
+    targets:
+      - name: a
+        model: m
+        base_url: https://api.example.com/v1
+        api_key_env: K
+`), Env{"K": "x"})
+	if err == nil || !strings.Contains(err.Error(), "positive") {
+		t.Errorf("negative max: got %v, want a startup error", err)
 	}
 }
 

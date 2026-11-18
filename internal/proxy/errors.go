@@ -29,9 +29,10 @@ func errorBody(message, typ, code string) []byte {
 	return body
 }
 
-// parseRetryAfter turns an upstream Retry-After into a duration. It accepts
-// seconds and an HTTP date, and clamps the result so a hostile or broken value
-// cannot make a target unavailable for an unreasonable time.
+// parseRetryAfter turns an upstream Retry-After into a duration. It accepts seconds and an HTTP
+// date. max is the clamp and 0 means no clamp, so the value the upstream sent is used as
+// written; def is the configured duration for that status code, used when the value is absent,
+// unparseable or non-positive.
 func parseRetryAfter(value string, def, max time.Duration) time.Duration {
 	if value == "" {
 		return def
@@ -41,7 +42,7 @@ func parseRetryAfter(value string, def, max time.Duration) time.Duration {
 			return def
 		}
 		d := time.Duration(seconds) * time.Second
-		if d > max {
+		if max > 0 && d > max {
 			return max
 		}
 		return d
@@ -51,7 +52,7 @@ func parseRetryAfter(value string, def, max time.Duration) time.Duration {
 		if d <= 0 {
 			return def
 		}
-		if d > max {
+		if max > 0 && d > max {
 			return max
 		}
 		return d

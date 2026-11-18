@@ -391,6 +391,59 @@ routing:
 	}
 }
 
+// TestHugeRetryAfterPassesThroughWhenClampIsOff is the off switch for the clamp. A target is not
+// contacted while it is cooling, so a Retry-After is never verified: the clamp is what makes
+// verification happen at all, which is why a default exists. With 0 the received value governs,
+// and the gateway forwards it because the window it applied is the window it received.
+func TestHugeRetryAfterPassesThroughWhenClampIsOff(t *testing.T) {
+	h := newHarness(t, `
+routes:
+  m:
+    targets:
+      - name: a
+        model: m
+        base_url: https://fake.invalid/v1
+        api_key_env: KEY_A
+routing:
+  cooldown:
+    status: {429: 10s}
+    max: 0s
+`, config.Env{"KEY_A": "key-a"})
+
+	h.fake.Set("key-a", fakeupstream.Behavior{Sequence: []fakeupstream.Behavior{
+		{Status: 429, Headers: map[string]string{"Retry-After": "3600"},
+			Body: `{"error":{"message":"limited"}}`},
+		{Status: 200, Body: `{"ok":true}`},
+	}})
+
+	resp, _ := h.post(chatBody("m"))
+	if resp.StatusCode != 429 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "3600" {
+		t.Errorf("Retry-After: got %q, want the value as received", got)
+	}
+	if !strings.Contains(h.log.String(), `"seconds":3600`) {
+		t.Errorf("the window applied is not the window received: %s", h.log.String())
+	}
+
+	// Inside the window the value is not verified, so it governs on its own.
+	h.clock.Advance(3599 * time.Second)
+	h.post(chatBody("m"))
+	if h.fake.Attempts("key-a") != 1 {
+		t.Error("the target was contacted inside its own window")
+	}
+
+	h.clock.Advance(time.Second)
+	resp, _ = h.post(chatBody("m"))
+	if resp.StatusCode != 200 {
+		t.Fatalf("after the window: got %d, want 200", resp.StatusCode)
+	}
+	if h.fake.Attempts("key-a") != 2 {
+		t.Errorf("the value was not verified when the window ended: %d attempts", h.fake.Attempts("key-a"))
+	}
+}
+
 // TestAllCoolingDoesNotTouchUpstream: a fully cooled model is answered from the
 // gateway's own state, and Retry-After comes from the target that recovers
 // first.

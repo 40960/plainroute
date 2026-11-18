@@ -131,10 +131,15 @@ type RoutingConfig struct {
 
 // CooldownConfig is deliberately small. A status code maps to a cooldown
 // duration; 0 means that status does not cool a target down. Retry-After
-// from the upstream always wins, up to Max.
+// from the upstream always wins, up to Max, and Max can be turned off with 0.
 type CooldownConfig struct {
 	Status map[int]Duration `yaml:"status"`
-	Max    Duration         `yaml:"max"`
+
+	// Max is the clamp for a Retry-After from the upstream. Absent means the default;
+	// 0 means no clamp, so a value the upstream sent is used as written. The clamp never
+	// applies to a configured duration, because a configured duration is a choice the
+	// operator made and does not need protecting. A negative value is a startup error.
+	Max *Duration `yaml:"max"`
 
 	// Timeout cools a target down after a connection, response-header or stream
 	// idle failure. 0 disables it. Authentication failures are handled through the
@@ -149,6 +154,24 @@ type CooldownConfig struct {
 // asked again.
 func DefaultCooldown() map[int]Duration {
 	return map[int]Duration{429: Duration(10 * time.Second)}
+}
+
+// DefaultCooldownMax is the clamp used when the file does not set one: 15 minutes. A target is
+// not contacted while it is cooling, so a Retry-After the upstream sent is never checked, and the
+// clamp is the longest an unverified value can govern before that target is asked again and
+// reality answers. 15 minutes is above what a rate limit in force can plausibly state, so the
+// clamp fires on a value that cannot be true rather than on a true one.
+func DefaultCooldownMax() Duration {
+	return Duration(15 * time.Minute)
+}
+
+// MaxStd is the clamp as a duration, or 0 when no clamp is configured. 0 means a value the
+// upstream sent is used as written.
+func (c CooldownConfig) MaxStd() time.Duration {
+	if c.Max == nil {
+		return DefaultCooldownMax().Std()
+	}
+	return c.Max.Std()
 }
 
 // RetryConfig is off by default. PlainRoute does not retry inside one client
@@ -325,8 +348,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Routing.Cooldown.Status == nil {
 		cfg.Routing.Cooldown.Status = DefaultCooldown()
 	}
-	if cfg.Routing.Cooldown.Max == 0 {
-		cfg.Routing.Cooldown.Max = Duration(5 * time.Minute)
+	if cfg.Routing.Cooldown.Max == nil {
+		max := DefaultCooldownMax()
+		cfg.Routing.Cooldown.Max = &max
 	}
 
 	if cfg.Retry.MaxAttempts <= 0 {
@@ -385,8 +409,8 @@ func validate(cfg *Config, env Env) error {
 		problems = append(problems, fmt.Sprintf("routing.strategy %q must be least_active or round_robin", cfg.Routing.Strategy))
 	}
 
-	if cfg.Routing.Cooldown.Max <= 0 {
-		problems = append(problems, "routing.cooldown.max must be positive")
+	if cfg.Routing.Cooldown.Max != nil && *cfg.Routing.Cooldown.Max < 0 {
+		problems = append(problems, "routing.cooldown.max must be positive, or 0 for no clamp")
 	}
 	for status, dur := range cfg.Routing.Cooldown.Status {
 		if status < 100 || status > 599 {

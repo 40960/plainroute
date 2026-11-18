@@ -113,7 +113,7 @@ func (h *Handler) attempt(
 	if res.StatusCode >= 400 {
 		h.metrics.UpstreamAttempts.WithLabelValues(pool.Route, t.Name, metrics.StatusClass(res.StatusCode)).Inc()
 		def := cfg.Routing.Cooldown.Status[res.StatusCode].Std()
-		ra := parseRetryAfter(res.Header.Get("Retry-After"), def, cfg.Routing.Cooldown.Max.Std())
+		ra := parseRetryAfter(res.Header.Get("Retry-After"), def, cfg.Routing.Cooldown.MaxStd())
 		if ra > 0 {
 			h.applyCooldown(cfg, pool, t, ra, http.StatusText(res.StatusCode), id)
 		}
@@ -125,10 +125,10 @@ func (h *Handler) attempt(
 			return outcome{kind: "status", fallbackable: true}
 		}
 
-		// The provider error body is forwarded as the upstream produced it. The
-		// only value PlainRoute changes here is Retry-After: the gateway reports
-		// the window it actually applied, so a hostile or broken upstream value
-		// cannot be pushed on to the client.
+		// The provider error body is forwarded as the upstream produced it. The only value
+		// PlainRoute changes here is Retry-After: the gateway reports the window it actually
+		// applied, which is the value it received when the clamp is off, and the clamp when the
+		// received value exceeded it.
 		w.Header().Set("X-Request-Id", id)
 		copyResponseHeaders(w.Header(), res.Header)
 		if ra > 0 {
