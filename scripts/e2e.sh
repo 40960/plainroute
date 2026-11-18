@@ -103,7 +103,7 @@ go build -o "$BIN/plainroute-bench" ./cmd/bench
 # A process left over from an earlier run answers the checks instead of the one this
 # script starts, so a run can pass for the wrong reason or fail for one that is not its
 # own.
-for port in 8080 8091 8092 8093 8094 8095 8096 8097 8098 8099 8100; do
+for port in 8080 8091 8092 8093 8094 8095 8096 8097 8098 8099 8100 8101; do
   if (exec 9<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null; then
     printf 'something is already listening on 127.0.0.1:%s. Stop it before running this script.\n' "$port" >&2
     exit 1
@@ -173,6 +173,10 @@ cat > "$WORK/behaviors.json" <<'JSON'
     "body": "{\"error\":{\"message\":\"content safety screening is temporarily unavailable\"}}"
   },
   "e2e-size": {
+    "status": 200,
+    "body": "{\"object\":\"chat.completion\",\"choices\":[]}"
+  },
+  "gen-key-1": {
     "status": 200,
     "body": "{\"object\":\"chat.completion\",\"choices\":[]}"
   }
@@ -946,6 +950,44 @@ check "and nothing reached the upstream, so the gateway did not forward a body i
 has "the example config writes the 32 MiB request limit it recommends" 'max_request_bytes: 33554432' \
   "$(cat "$ROOT/config.example.yaml")"
 has "and the 64 MiB response limit" 'max_response_bytes: 67108864' "$(cat "$ROOT/config.example.yaml")"
+
+printf '\n15. the generator: the numbers it writes, the parameters that change them, and that its output is a config\n'
+# A snapshot is used here so this case does not touch the network: CI is not a place to check
+# somebody's provider. The generator is a file a new user copies, so its numbers are checked
+# against the recommendation the README states, and the generated file is then loaded by the gateway
+# itself, which is the only way to say "its output is a config" instead of "its output is text that
+# looks like a config".
+printf '%s' '["glm-4.5", "qwen3:8b"]' > "$WORK/models.json"
+export GEN_KEY_1=gen-key-1
+
+python3 "$ROOT/scripts/generate-config.py" --models "$WORK/models.json" --keys 1 --key-prefix GEN_KEY \
+  --base-url http://127.0.0.1:8091/v1 --listen 127.0.0.1:8101 --out "$WORK/gen.yaml" > "$WORK/gen.out" 2>&1
+check "the generator runs from a snapshot, so this case never contacts an upstream" "0" "$?"
+has "the request limit it writes is the recommended 32 MiB" 'max_request_bytes: 33554432' "$(cat "$WORK/gen.yaml")"
+has "the response limit is the recommended 64 MiB" 'max_response_bytes: 67108864' "$(cat "$WORK/gen.yaml")"
+has "the clamp is the recommended 30s" '^[ ]*max: 30s' "$(cat "$WORK/gen.yaml")"
+has "429 keeps the documented prior" '^[ ]*429: 10s' "$(cat "$WORK/gen.yaml")"
+has "and 503 writes no window, which is the default this script chose" '^[ ]*503: 0s' "$(cat "$WORK/gen.yaml")"
+
+python3 "$ROOT/scripts/generate-config.py" --models "$WORK/models.json" --keys 1 --key-prefix GEN_KEY \
+  --base-url http://127.0.0.1:8091/v1 --listen 127.0.0.1:8101 \
+  --max-request-bytes 1048576 --max-response-bytes 2097152 --cooldown-max 6s --cooldown-503 20s \
+  --out "$WORK/gen2.yaml" > "$WORK/gen2.out" 2>&1
+check "and the parameters change what the script writes" "0" "$?"
+has "--max-request-bytes is written as it was given" 'max_request_bytes: 1048576' "$(cat "$WORK/gen2.yaml")"
+has "--max-response-bytes is written as it was given" 'max_response_bytes: 2097152' "$(cat "$WORK/gen2.yaml")"
+has "--cooldown-max is written as it was given" '^[ ]*max: 6s' "$(cat "$WORK/gen2.yaml")"
+has "--cooldown-503 is written as it was given" '^[ ]*503: 20s' "$(cat "$WORK/gen2.yaml")"
+has "and the generator writes the name of a variable, never a key" 'api_key_env: GEN_KEY_1' "$(cat "$WORK/gen2.yaml")"
+not_has "so a generated file cannot be committed with a key in it" 'gen-key-1' "$(cat "$WORK/gen2.yaml")"
+
+start_gateway "$WORK/gen.yaml" "$WORK/gen.log"
+check "the generated file is a config the gateway accepts, not only text that looks like one" \
+  "ok" "$(curl -s http://127.0.0.1:8101/healthz)"
+status=$(post_to 8101 glm-4.5 "$WORK/genreq.out")
+check "and a request through a generated route reaches the upstream" "200" "$status"
+has "and the answer is the one this key is configured for, so the route the script wrote is the route the gateway reads" \
+  'chat.completion' "$(cat "$WORK/genreq.out")"
 
 printf '\n%d checks: %s\n' "$CHECKS" "$([ "$FAIL" = 0 ] && echo 'all passed' || echo 'failures')"
 exit "$FAIL"

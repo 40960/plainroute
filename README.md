@@ -783,6 +783,32 @@ it, not as a fact: the image size and the container settings need a docker daemo
 the model list falls back to a snapshot only when the live endpoint gives nothing. Every
 end-to-end assertion here was shown to fail once by breaking the code it reads, so a
 green run means something.
+### Generating a config
+
+`scripts/generate-config.py` writes a config for one OpenAI-compatible upstream: the
+model list comes from the live endpoint and falls back to a snapshot file when that
+endpoint gives nothing. Keys are never written into the file, only the names of the
+environment variables that hold them.
+
+The numbers it writes are the recommendation for a coding-agent workload, not the
+library defaults, and they are parameters because the right number depends on the
+workload:
+
+```bash
+python3 scripts/generate-config.py --models models.json \
+  --max-request-bytes 33554432 --max-response-bytes 67108864 \
+  --cooldown-max 30s --cooldown-503 0s --cooldown-429 10s
+```
+
+`--cooldown-503 0s` means no window, which is the default this script chose for the
+reason given in the routing section. A duration written here goes into the file as it
+was given, and the gateway is what refuses a negative one at startup.
+
+CI runs the script against a snapshot file, so the check does not contact anyone's
+provider. What it checks is that the defaults are the numbers stated above, that the
+parameters change what the script writes, that the script writes a key name and not a
+key, and that the output is a config a real gateway loads and routes a request through,
+not only text that looks like a config.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [docs/architecture.md](docs/architecture.md), and
 [CHANGELOG.md](CHANGELOG.md).

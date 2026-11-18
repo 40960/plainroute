@@ -79,6 +79,15 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   a 413 with `code: request_body_too_large` and no upstream call, and the bytes that
   arrive are the bytes that were sent with only the bytes of the `model` value replaced.
 
+- scripts/generate-config.py takes the production numbers as parameters:
+  `--max-request-bytes`, `--max-response-bytes`, `--cooldown-max` and `--cooldown-503`,
+  which write 33554432, 67108864, 30s and 0s when nothing is given. Those are what this
+  script recommends for a coding-agent workload, not the library defaults, which stay
+  8 MiB, 32 MiB and 15 minutes: what one provider does is a reason for a recommendation,
+  not a reason to change the routing abstraction. CI runs the script against a snapshot
+  file, so the check never contacts a provider, and it checks that a generated file is a
+  config a real gateway loads and routes a request through.
+
 ### Fixes
 - A negative size limit is a startup error instead of being quietly replaced by the
   default, which is what made the message in the config check a claim that could never

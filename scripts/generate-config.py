@@ -13,6 +13,13 @@ Usage:
   python3 scripts/generate-config.py --keys 4 --max-active 8 --out config.yaml
   python3 scripts/generate-config.py --models models.json        # snapshot, no network
   python3 scripts/generate-config.py --base-url https://api.example.com/v1 --key-prefix EXAMPLE_API_KEY
+  python3 scripts/generate-config.py --max-request-bytes 33554432 --max-response-bytes 67108864
+      --cooldown-max 30s --cooldown-503 0s
+
+The numbers above are the defaults this script writes, and they are the recommendation for a
+coding-agent workload rather than the library default: a coding agent that carries a screenshot
+sends a body in the tens of megabytes. They are parameters because the right number depends on the
+workload, and a script that hardcodes one person's workload is a config people edit by hand after.
 
 The target names are stable (slot numbers), so a reload keeps the cooldown of a
 target that is still configured.
@@ -38,11 +45,11 @@ server:
   write_timeout: 0s
   idle_timeout: 120s
   shutdown_grace: 30s
-  # The defaults a coding agent needs, and the values the CLI parameters set. The library default
-  # is smaller, so a file made by this script says what it wrote instead of leaving a reader to
-  # guess which default it is looking at.
-  max_request_bytes: 33554432
-  max_response_bytes: 67108864
+  # What a coding agent needs, and what the CLI parameters set. The library default is smaller, so
+  # a file made by this script says the number it wrote instead of leaving a reader to guess which
+  # default it is looking at. 0 or absent in the config means the library default.
+  max_request_bytes: {max_request_bytes}
+  max_response_bytes: {max_response_bytes}
   max_header_bytes: 1048576
 
 timeouts:
@@ -68,9 +75,10 @@ routing:
       # 0 means no window: a 503 normally says the service behind the key is temporarily
       # unavailable, not that this key is broken. PlainRoute does not count consecutive
       # failures, so a window here would hold a working key out for a failure that may not
-      # belong to it. Write a window here only when you know your provider means the key.
-      503: 0s
-    max: 5m
+      # belong to it. Write a window here only when you know your provider means the key, which is
+      # what --cooldown-503 is for.
+      503: {cooldown_503}
+    max: {cooldown_max}
     timeout: 0s
 
 retry:
@@ -149,7 +157,16 @@ def main() -> int:
     parser.add_argument("--strategy", default="least_active", choices=["least_active", "round_robin"])
     parser.add_argument("--response-header", type=int, default=120)
     parser.add_argument("--stream-idle", type=int, default=300)
-    parser.add_argument("--cooldown-429", default="10s")
+    parser.add_argument("--max-request-bytes", type=int, default=33554432,
+                        help="32 MiB, the size a coding-agent body with a screenshot in it needs; 0 means the library default")
+    parser.add_argument("--max-response-bytes", type=int, default=67108864,
+                        help="64 MiB; 0 means the library default")
+    parser.add_argument("--cooldown-429", default="10s",
+                        help="the prior for the silent case, used when the upstream sent no usable Retry-After")
+    parser.add_argument("--cooldown-503", default="0s",
+                        help="0 means no window, which is what a 503 normally deserves; write a window when your provider means the key")
+    parser.add_argument("--cooldown-max", default="30s",
+                        help="the clamp on a value the upstream sent; 0 turns the clamp off, and the library default is 15m")
     parser.add_argument("--timeout", type=int, default=20, help="seconds to wait for the model list")
     args = parser.parse_args()
 
@@ -179,7 +196,11 @@ def main() -> int:
         strategy=args.strategy,
         response_header=args.response_header,
         stream_idle=args.stream_idle,
+        max_request_bytes=args.max_request_bytes,
+        max_response_bytes=args.max_response_bytes,
         cooldown_429=args.cooldown_429,
+        cooldown_503=args.cooldown_503,
+        cooldown_max=args.cooldown_max,
         routes=build_routes(models, args.keys, args.base_url, args.key_prefix, args.max_active),
     )
 
