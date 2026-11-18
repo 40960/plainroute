@@ -37,7 +37,7 @@ func main() {
 		return
 	}
 
-	cfg, err := config.Load(*cfgPath, config.DefaultEnv())
+	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "plainroute: %v\n", err)
 		os.Exit(1)
@@ -70,16 +70,15 @@ func main() {
 	// upstream returning 429 never makes the whole gateway unready.
 	handler.MarkReady()
 
-	// The gate state and the name of the variable it reads, never the value. The name is the only
-	// thing that tells this project's key from one another program exported in the same
-	// environment, so a name collision is visible here: the config check cannot catch it, because
-	// a collided variable is set.
+	// The gate state, and never the value. A key is a value in the file now, so there is nothing
+	// here that can be reported about it except whether the gate is on: printing the value would
+	// print a secret into the log, and a log line is what a bug report and a terminal show.
 	gate := "off"
-	if cfg.Auth.APIKeyEnv != "" {
+	if cfg.Auth.APIKey != "" {
 		gate = "on"
 	}
 
-	fields := []any{
+	log.Info("listening",
 		"listen", cfg.Server.Listen,
 		"routes", len(cfg.Routes),
 		"strategy", cfg.Routing.Strategy,
@@ -87,11 +86,8 @@ func main() {
 		"stream_idle", cfg.Timeouts.StreamIdle.String(),
 		"version", version,
 		"gate", gate,
-	}
-	if cfg.Auth.APIKeyEnv != "" {
-		fields = append(fields, "api_key_env", cfg.Auth.APIKeyEnv)
-	}
-	log.Info("listening", fields...)
+		"config", *cfgPath,
+	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -123,7 +119,7 @@ func main() {
 			}
 			return
 		case <-reloading:
-			reloaded, err := config.Load(*cfgPath, config.DefaultEnv())
+			reloaded, err := config.Load(*cfgPath)
 			if err != nil {
 				m.Reloads.WithLabelValues("failed").Inc()
 				log.Error("reload_failed", "error", err)

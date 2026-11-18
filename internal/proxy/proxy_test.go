@@ -50,7 +50,7 @@ type harness struct {
 	clock   *fakeClock
 }
 
-func newHarness(t *testing.T, cfgText string, env config.Env) *harness {
+func newHarness(t *testing.T, cfgText string) *harness {
 	t.Helper()
 
 	fake := fakeupstream.New()
@@ -61,7 +61,7 @@ func newHarness(t *testing.T, cfgText string, env config.Env) *harness {
 	// test config is only a stand-in for the httptest URL.
 	cfgText = strings.ReplaceAll(cfgText, "https://fake.invalid/v1", fakeServer.URL+"/v1")
 
-	cfg, err := config.Parse([]byte(cfgText), env)
+	cfg, err := config.Parse([]byte(cfgText))
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
@@ -124,8 +124,8 @@ routes:
       - name: a
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	sequence := []string{
 		"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
@@ -160,8 +160,8 @@ routes:
       - name: a
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	sequence := []string{
 		"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\"}}}]}]}\n\n",
@@ -195,12 +195,12 @@ routes:
       - name: account-1
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
       - name: account-2
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_B
-`, config.Env{"KEY_A": "key-a", "KEY_B": "key-b"})
+        api_key: key-b
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 429, Body: `{"error":{"message":"rate limited","type":"rate_limit_error"}}`})
 	h.fake.Set("key-b", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
@@ -251,16 +251,16 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
       - name: b
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_B
+        api_key: key-b
 routing:
   cooldown:
     status: {429: 3s}
     max: 30s
-`, config.Env{"KEY_A": "key-a", "KEY_B": "key-b"})
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 429, Headers: map[string]string{"Retry-After": "2"},
 		Body: `{"error":{"message":"limited"}}`})
@@ -302,12 +302,12 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 routing:
   cooldown:
     status: {429: 10s}
     max: 30s
-`, config.Env{"KEY_A": "key-a"})
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 500, Body: `{"error":{"message":"internal"}}`})
 
@@ -344,8 +344,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	upstream := `{"error":{"message":"content safety screening is temporarily unavailable"}}`
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 503, Body: upstream})
@@ -397,12 +397,12 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 routing:
   cooldown:
     status: {429: 10s, 503: 0s}
     max: 30s
-`, config.Env{"KEY_A": "key-a"})
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 503,
 		Body: `{"error":{"message":"content safety screening is temporarily unavailable"}}`})
@@ -440,11 +440,11 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 routing:
   cooldown:
     max: 30s
-`, config.Env{"KEY_A": "key-a"})
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 503,
 		Headers: map[string]string{"Retry-After": "2"},
@@ -490,12 +490,12 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 routing:
   cooldown:
     status: {429: 5s}
     max: 30s
-`, config.Env{"KEY_A": "key-a"})
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 429,
 		Headers: map[string]string{"Retry-After": "not-a-number"}, Body: `{"error":{"message":"limited"}}`})
@@ -526,12 +526,12 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 routing:
   cooldown:
     status: {429: 10s}
     max: 30s
-`, config.Env{"KEY_A": "key-a"})
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 429,
 		Headers: map[string]string{"Retry-After": "36000"}, Body: `{"error":{"message":"limited"}}`})
@@ -554,12 +554,12 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 routing:
   cooldown:
     status: {429: 10s}
     max: 0s
-`, config.Env{"KEY_A": "key-a"})
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Sequence: []fakeupstream.Behavior{
 		{Status: 429, Headers: map[string]string{"Retry-After": "3600"},
@@ -606,20 +606,20 @@ routes:
       - name: a
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
       - name: b
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_B
+        api_key: key-b
       - name: c
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_C
+        api_key: key-c
       - name: d
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_D
-`, config.Env{"KEY_A": "key-a", "KEY_B": "key-b", "KEY_C": "key-c", "KEY_D": "key-d"})
+        api_key: key-d
+`)
 
 	for _, key := range []string{"key-a", "key-b", "key-c", "key-d"} {
 		h.fake.Set(key, fakeupstream.Behavior{Status: 429, Body: `{"error":{"message":"limited"}}`})
@@ -683,22 +683,22 @@ routes:
       - name: a
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
       - name: b
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_B
+        api_key: key-b
       - name: c
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_C
+        api_key: key-c
       - name: d
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_D
+        api_key: key-d
 retry:
   enabled: false
-`, config.Env{"KEY_A": "key-a", "KEY_B": "key-b", "KEY_C": "key-c", "KEY_D": "key-d"})
+`)
 
 	for _, key := range []string{"key-a", "key-b", "key-c", "key-d"} {
 		h.fake.Set(key, fakeupstream.Behavior{Status: 429, Body: `{"error":{"message":"limited"}}`})
@@ -747,12 +747,12 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 routing:
   cooldown:
     status: {%d: 15s}
     max: 60s
-`, code), config.Env{"KEY_A": "key-a"})
+`, code))
 
 		h.fake.Set("key-a", fakeupstream.Behavior{Status: code, Body: `{"error":{"message":"upstream said no"}}`})
 		resp, body := h.post(chatBody("m"))
@@ -776,8 +776,8 @@ routes:
       - name: a
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 
@@ -821,12 +821,12 @@ routes:
       - name: a
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
       - name: b
         model: provider/model-two
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_B
-`, config.Env{"KEY_A": "key-a", "KEY_B": "key-b"})
+        api_key: key-b
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 	h.fake.Set("key-b", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
@@ -856,6 +856,9 @@ routes:
 	}
 }
 
+// The config file holds the key now, so this is the case the security model depends on: a value
+// that is a secret in the file must not reach a log line. The key here is an obviously fake fixture
+// value, and the check is that it is absent from every line the gateway wrote.
 func TestLogsDoNotContainKeysOrPrompts(t *testing.T) {
 	h := newHarness(t, `
 routes:
@@ -864,8 +867,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "super-secret-key-12345"})
+        api_key: super-secret-key-12345
+`)
 
 	// Behaviour is keyed by the value of the API key, which is what the gateway
 	// presents to the upstream.
@@ -895,8 +898,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	resp, body := h.post(chatBody("nope"))
 	if resp.StatusCode != 404 {
@@ -964,8 +967,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	w := &failingWriter{header: http.Header{}, err: errors.New("client went away")}
 	req, err := http.NewRequest(http.MethodPost, h.gateway.URL+"/v1/chat/completions", strings.NewReader("{}"))
@@ -992,8 +995,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 429, Body: `{"error":{"message":"limited"}}`})
 	h.post(chatBody("m"))
@@ -1022,18 +1025,18 @@ routes:
       - name: a
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
       - name: b
         model: provider/model-two
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_B
+        api_key: key-b
   qwen3:8b:
     targets:
       - name: local
         model: qwen3:8b
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a", "KEY_B": "key-b"})
+        api_key: key-a
+`)
 
 	resp, body := h.get("/v1/models")
 	if resp.StatusCode != 200 {

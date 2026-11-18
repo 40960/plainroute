@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/40960/plainroute/internal/config"
 	"github.com/40960/plainroute/internal/fakeupstream"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -29,8 +28,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	first := "data: {\"delta\":{\"role\":\"assistant\"}}\n\n"
 	second := "data: {\"delta\":{\"content\":\"later\"}}\n\n"
@@ -83,13 +82,13 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 timeouts:
   connect: 1s
   response_header: 2s
   stream_idle: 2s
   request: 0s
-`, config.Env{"KEY_A": "key-a"})
+`)
 
 	// Six frames, 250ms apart: 1.5s of streaming, longer than the response header
 	// timeout, so a short overall timeout would have killed it.
@@ -137,7 +136,7 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 timeouts:
   stream_idle: 200ms
 routing:
@@ -145,7 +144,7 @@ routing:
     status: {429: 10s}
     timeout: 1s
     max: 30s
-`, config.Env{"KEY_A": "key-a"})
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200,
 		SSE: []string{"data: {\"delta\":{\"content\":\"partial\"}}\n\n", "data: [DONE]\n\n"},
@@ -189,10 +188,10 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 timeouts:
   stream_idle: 150ms
-`, config.Env{"KEY_A": "key-a"})
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Delay: 3 * time.Second})
 
@@ -225,8 +224,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200,
 		SSE:           []string{"data: {\"delta\":{\"content\":\"first\"}}\n\n"},
@@ -281,14 +280,14 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
       - name: b
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_B
+        api_key: key-b
 timeouts:
   stream_idle: 100ms
-`, config.Env{"KEY_A": "key-a", "KEY_B": "key-b"})
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 	h.fake.Set("key-b", fakeupstream.Behavior{Status: 429, Body: `{"error":{"message":"limited"}}`})
@@ -384,10 +383,10 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 timeouts:
   stream_idle: 1s
-`, config.Env{"KEY_A": "key-a"})
+`)
 
 		h.fake.Set("key-a", c.beh)
 
@@ -425,10 +424,10 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 timeouts:
   stream_idle: 1s
-`, config.Env{"KEY_A": "key-a"})
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, CloseEarly: true, SSE: []string{
 		"data: {\"delta\":{\"role\":\"assistant\"}}\n\n",
@@ -467,8 +466,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	chunk := "data: " + strings.Repeat("x", 60) + "\n\n"
 	frames := make([]string, 10)
@@ -507,8 +506,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 
@@ -538,8 +537,8 @@ routes:
       - name: a
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 
@@ -578,8 +577,8 @@ routes:
       - name: a
         model: provider/vision-model
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 
@@ -632,8 +631,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	frame := "data: " + strings.Repeat("x", 42) + "\n\n"
 	if len(frame) != 50 {
@@ -667,20 +666,20 @@ routes:
       - name: a
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
       - name: b
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_B
+        api_key: key-b
       - name: c
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_C
+        api_key: key-c
       - name: d
         model: provider/model-one
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_D
-`, config.Env{"KEY_A": "key-a", "KEY_B": "key-b", "KEY_C": "key-c", "KEY_D": "key-d"})
+        api_key: key-d
+`)
 
 	frames := []string{
 		"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
@@ -752,8 +751,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200,
 		SSE:   []string{"data: {\"delta\":{\"content\":\"streaming\"}}\n\n", "data: [DONE]\n\n"},

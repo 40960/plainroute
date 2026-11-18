@@ -23,15 +23,15 @@ const callerBody = `{"model":"m","messages":[{"role":"user","content":"prompt-co
 func TestCallerKeyGate(t *testing.T) {
 	h := newHarness(t, `
 auth:
-  api_key_env: CALLER_KEY
+  api_key: caller-key
 routes:
   m:
     targets:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: DEPLOYMENT_KEY
-`, config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})
+        api_key: target-key
+`)
 
 	// If the caller key were forwarded, the fake upstream would resolve the request by it
 	// and answer with its own marker. It must not.
@@ -108,15 +108,15 @@ routes:
 func TestGateCoversTheAPIEndpointsOnly(t *testing.T) {
 	h := newHarness(t, `
 auth:
-  api_key_env: CALLER_KEY
+  api_key: caller-key
 routes:
   m:
     targets:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: DEPLOYMENT_KEY
-`, config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})
+        api_key: target-key
+`)
 
 	h.fake.Set("target-key", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 
@@ -162,8 +162,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: DEPLOYMENT_KEY
-`, config.Env{"DEPLOYMENT_KEY": "target-key"})
+        api_key: target-key
+`)
 
 	h.fake.Set("target-key", fakeupstream.Behavior{Status: 200, Body: `{"via":"target-key"}`})
 
@@ -198,8 +198,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: DEPLOYMENT_KEY
-`, config.Env{"DEPLOYMENT_KEY": "target-key"})
+        api_key: target-key
+`)
 
 	h.fake.Set("target-key", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 
@@ -210,15 +210,15 @@ routes:
 
 	reloaded, err := config.Parse([]byte(`
 auth:
-  api_key_env: CALLER_KEY
+  api_key: caller-key
 routes:
   m:
     targets:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: DEPLOYMENT_KEY
-`), config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})
+        api_key: target-key
+`))
 	if err != nil {
 		t.Fatalf("reload config: %v", err)
 	}

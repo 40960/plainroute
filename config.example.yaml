@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# PlainRoute example config. Keys come from the environment only. A config file with a
-# key in it is a file people commit by accident; this one never has one.
+# PlainRoute example config. Every key here is the placeholder replace-me, so this file is safe to
+# commit. A config you actually run on is a different file, and it is a secret: the keys are values
+# in it, so it needs 600 permissions, it is gitignored, and nothing this project writes prints what
+# it reads from it. Copy this file, fill in the keys, and it is the file the gateway runs on.
 
 server:
   listen: ":8080"
@@ -85,25 +87,22 @@ metrics:
   enabled: true
   path: /metrics
 
-# Optional, and off when nothing is written here. One api key the caller presents, read from
-# the environment. No key configured means no gate: the gateway checks nothing, and any
-# process that can reach the listening port can use the targets. When a key is set it is
-# compared in constant time, and the key that goes upstream is still the one configured for
-# the selected target, so the caller key never reaches the provider.
+# Optional, and off when nothing is written here. One api key the caller presents. No key configured
+# means no gate: the gateway checks nothing, and any process that can reach the listening port can
+# use the targets. When a key is set it is compared in constant time, and the key that goes upstream
+# is still the one configured for the selected target, so the caller key never reaches the provider.
 #
 # The gate covers the API endpoints (/v1/*). Health, readiness and the metrics page stay
 # open, because a monitoring system that cannot authenticate is the ordinary case and those
 # pages carry counts only.
 #
-# A variable named here but not present in the environment is a startup failure, not a
-# silently open gate, because a half-configured gate reads as a working one.
-#
-# Give it a name this project owns. A generic name such as API_KEY can be exported by another
-# program in the same shell, or set by a shared .env, and the gate then compares a value nobody
-# chose for it: startup succeeds, and a key from a different program works as if it were the
-# gate's own. The prefix is the only thing telling this project's secret from that one.
+# There is no half state: the value written here is the value in force, so a gate that reads as on
+# in the file is on. The old form named an environment variable, and a gate named by a variable could
+# be on with a value this project did not choose, because a generic name such as API_KEY can be
+# exported by another program in the same shell. Writing the value is the whole fix, and the field is
+# refused now instead of ignored.
 # auth:
-#   api_key_env: PLAINROUTE_API_KEY
+#   api_key: replace-me
 
 routes:
   # A route is a name a client can send. The model belongs to each target, so one route can
@@ -115,12 +114,12 @@ routes:
       - name: account-1
         model: provider/model-one
         base_url: https://api.example.com/v1
-        api_key_env: EXAMPLE_API_KEY_1
+        api_key: replace-me
         max_active: 4
       - name: account-2
         model: provider/model-one
         base_url: https://api.example.com/v1
-        api_key_env: EXAMPLE_API_KEY_2
+        api_key: replace-me
         max_active: 4
 
   local:
@@ -128,4 +127,4 @@ routes:
       - name: ollama
         model: qwen3:8b
         base_url: http://127.0.0.1:11434/v1
-        api_key_env: LOCAL_KEY
+        api_key: replace-me

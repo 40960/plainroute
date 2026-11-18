@@ -7,9 +7,10 @@ import (
 	"testing"
 )
 
-// The api key a caller presents is optional. These tests pin the two halves of that:
-// nothing configured means no gate, and a named variable that is not set is a startup
-// failure rather than a quietly open gate.
+// The caller key is optional, and it is a value in the file like any other value. These tests pin
+// what optional means: nothing written means no gate, and something written is the value in force.
+// There is no half state left, because there is no second place a value can come from: a gate that
+// reads as on in the file is on, and that is the whole check.
 
 func TestCallerKeyIsOffWhenNothingIsConfigured(t *testing.T) {
 	cfg, err := Parse([]byte(`
@@ -19,80 +20,104 @@ routes:
       - name: a
         model: m
         base_url: https://example.invalid/v1
-        api_key_env: DEPLOYMENT_KEY
-`), Env{"DEPLOYMENT_KEY": "target-key"})
+        api_key: target-key
+`))
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	if cfg.Auth.APIKey != "" || cfg.Auth.APIKeyEnv != "" {
-		t.Errorf("gate should be off with nothing configured, got %+v", cfg.Auth)
+	if cfg.Auth.APIKey != "" {
+		t.Errorf("gate should be off with nothing configured, got %q", cfg.Auth.APIKey)
 	}
 }
 
-func TestCallerKeyIsResolvedFromTheEnvironment(t *testing.T) {
+func TestCallerKeyIsTheValueInTheFile(t *testing.T) {
 	cfg, err := Parse([]byte(`
 auth:
-  api_key_env: CALLER_KEY
+  api_key: caller-key
 routes:
   m:
     targets:
       - name: a
         model: m
         base_url: https://example.invalid/v1
-        api_key_env: DEPLOYMENT_KEY
-`), Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})
+        api_key: target-key
+`))
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
 	if cfg.Auth.APIKey != "caller-key" {
-		t.Errorf("caller key: got %q, want the value from the environment", cfg.Auth.APIKey)
+		t.Errorf("caller key: got %q, want caller-key", cfg.Auth.APIKey)
 	}
 	if cfg.Routes["m"].Targets[0].APIKey != "target-key" {
-		t.Errorf("the target key must stay separate from the caller key")
+		t.Errorf("the caller key and the target key are different values and must stay apart")
 	}
 }
 
-// A half-configured gate is worse than no gate: the operator thinks callers are checked.
-func TestNamedCallerKeyMustExistInTheEnvironment(t *testing.T) {
-	_, err := Parse([]byte(`
+// An empty string is what YAML reads as nothing, so an explicit empty key means off in the same way
+// an absent block does. A gate written but empty must not read as a gate that is on: the comparison
+// would then run against an empty value, and a caller presenting nothing would pass.
+func TestEmptyCallerKeyMeansOffTheSameWayAsAbsent(t *testing.T) {
+	cfg, err := Parse([]byte(`
 auth:
-  api_key_env: CALLER_KEY
+  api_key: ""
 routes:
   m:
     targets:
       - name: a
         model: m
         base_url: https://example.invalid/v1
-        api_key_env: DEPLOYMENT_KEY
-`), Env{"DEPLOYMENT_KEY": "target-key"})
-	if err == nil {
-		t.Fatal("expected a startup failure for a named but unset caller key")
+        api_key: target-key
+`))
+	if err != nil {
+		t.Fatalf("config: %v", err)
 	}
-	if !strings.Contains(err.Error(), "CALLER_KEY") {
-		t.Errorf("the error must name the environment variable: %v", err)
+	if cfg.Auth.APIKey != "" {
+		t.Errorf("got %q, want off", cfg.Auth.APIKey)
 	}
 }
 
-// The field is called api key because that is what it is: the same value, in the same
-// header, with the same meaning as any other api key. A field named token is a different
-// word for the same thing, and a config that accepts both words is a config with two names
-// for one idea.
+// The field is called api_key because that is what it is: the same value, in the same header, with
+// the same meaning as any other api key. A field named token is a different word for the same thing,
+// and a config that accepts both words is a config with two names for one idea.
 func TestCallerKeyHasOneName(t *testing.T) {
 	_, err := Parse([]byte(`
 auth:
-  token: CALLER_KEY
+  token: caller-key
 routes:
   m:
     targets:
       - name: a
         model: m
         base_url: https://example.invalid/v1
-        api_key_env: DEPLOYMENT_KEY
-`), Env{"DEPLOYMENT_KEY": "target-key"})
+        api_key: target-key
+`))
 	if err == nil {
 		t.Fatal("expected a key that nothing reads to be rejected")
 	}
 	if !strings.Contains(err.Error(), "token") {
 		t.Errorf("the error must name the unknown key: %v", err)
+	}
+}
+
+// The field this change removed is not accepted, and the error says so instead of ignoring it. A
+// config that still read api_key_env would be a config with two credential systems, which is what
+// this change is about getting rid of.
+func TestTheRemovedCredentialFieldIsRejected(t *testing.T) {
+	_, err := Parse([]byte(`
+auth:
+  api_key_env: CALLER_KEY
+routes:
+  m:
+    targets:
+      - name: a
+        model: m
+        base_url: https://example.invalid/v1
+        api_key: target-key
+`))
+	if err == nil {
+		t.Fatal("expected the removed field to be rejected rather than ignored")
+	}
+	if !strings.Contains(err.Error(), "api_key_env") {
+		t.Errorf("the error must name the field that no longer exists: %v", err)
 	}
 }

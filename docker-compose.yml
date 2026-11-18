@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# Run as the gateway in front of the targets the generated config describes. Keys come
-# from a .env file with 600 permissions, never from this file and never from the image.
+# Run as the gateway in front of the targets the config describes. The config file holds the keys,
+# so it is a secret: 600 permissions, on the host, mounted read-only. Nothing is in this file and
+# nothing is in the image.
 
 services:
   plainroute:
@@ -16,14 +17,19 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
 
-    env_file:
-      - .env
-
     environment:
       PLAINROUTE_CONFIG: /etc/plainroute/config.yaml
 
+    # A directory mount, not a single-file mount. A single-file bind mount pins the inode the
+    # container started with: when an editor replaces the file, the container keeps reading the old
+    # inode and the live reload sees nothing. A directory mount is looked up on each read, so the
+    # process sees the file the operator actually wrote.
+    #
+    # This is a deployment fact about bind mounts, not something this repository can check: the
+    # daemon on the machine that runs the gateway is the place to confirm it. On the host, the file
+    # needs 600 permissions and the directory 700, so nothing else on the machine can read it.
     volumes:
-      - ./config.yaml:/etc/plainroute/config.yaml:ro
+      - ./plainroute-config:/etc/plainroute:ro
 
     # A base_url of 127.0.0.1 inside the container is the container itself, not the host.
     # When the upstream runs on the host, write host.docker.internal in the config file.

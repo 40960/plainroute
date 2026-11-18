@@ -42,6 +42,16 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   `code: model_not_found`. Looking up by upstream model name was possible only while one name
   mapped to exactly one model. A model can now sit behind several routes, and any rule for
   choosing between them would not be predictable from the config.
+- `api_key_env` is gone, and environment substitution is gone with it. A key is a value in the
+  config file, so the file a gateway actually runs on is a secret: `config.yaml` is gitignored, it
+  needs 600 permissions with the directory 700, the example file holds placeholders, and the
+  generator writes placeholders because it has no argument that can take a key. `.env.example` is
+  deleted and the `--env-file` workflow went with it, because a value that can come from two places is
+  the two-source problem this change removes: a generic name such as `API_KEY` can be exported by
+  another program in the same shell or set by a shared `.env`, and the process then compares a value
+  nobody chose for it. Writing the value down is the whole fix, and the startup rule that a named
+  variable must be set went with the lookup that rule existed for. A field a reader reads is now a
+  field that runs, and that is the property the tests pin.
 
 ### Behaviour
 
@@ -194,17 +204,17 @@ the end-to-end script.
   `Authorization` is always the configured target key.
 - `timeouts.request` is 0 by default, so a long reasoning stream is not killed by an
   ordinary request timeout.
-- Optional api key gate, off by default. `auth.api_key_env` names one environment variable;
-  when it resolves, the api key a caller presents is compared in constant time on the API
-  endpoints (`/v1/*`). Nothing configured means no gate, and a variable that is named but not
-  set is a startup failure, so a gate cannot be half-on. Health, readiness and the metrics
-  page stay open. The caller key is never forwarded upstream, never logged, and never appears
-  in a metric label: the key the provider sees is always the target key. A rejection is
-  401 with `code: invalid_api_key`, `type: authentication_error`, counted in
-  `plainroute_gateway_rejected_total{model="none",code="invalid_api_key"}`, and it is one of
-  the requests the gateway answered from its own state. The startup line reports the gate state and
-  the name of the variable it reads, never the value, which is the only place a name collision can
-  be seen: the config check cannot catch one, because a collided variable is set.
+- Optional api key gate, off by default. `auth.api_key` is a value in the file; when it is not empty,
+  the api key a caller presents is compared in constant time on the API endpoints (`/v1/*`). Nothing
+  configured means no gate, and an empty value means the same thing, so a gate cannot be half-on and
+  there is no second place for the value to come from. Health, readiness and the metrics page stay
+  open. The caller key is never forwarded upstream, never logged, and never appears in a metric
+  label: the key the provider sees is always the target key. A rejection is 401 with
+  `code: invalid_api_key`, `type: authentication_error`, counted in
+  `plainroute_gateway_rejected_total{route="none",code="invalid_api_key"}`, and it is one of the
+  requests the gateway answered from its own state. The startup line reports the gate as `on` or
+  `off` and never the value, because printing the value would print a secret into a log line. A gate
+  that reads as on in the file is on, and that is the whole check.
 - The gate applies to new requests after a `SIGHUP` reload; a request that was already
   handled is not gated retroactively.
 
@@ -235,11 +245,19 @@ the end-to-end script.
   started. A startup check runs under a timeout, so a build that stops reporting the
   problem fails the check instead of leaving a process that never exits.
 - `scripts/generate-config.py`: builds a config for one upstream with N key slots from the live
-  model endpoint, falling back to a snapshot file when that endpoint gives nothing. Keys are
-  named by environment variable and never written into the generated file.
+  model endpoint, falling back to a snapshot file when that endpoint gives nothing. Each slot is
+  written as `REPLACE_ME_ACCOUNT_n`, and `--key-prefix` is gone because the script has no argument
+  that takes a key value: a real key gets into the file only when a person types it in. The generated
+  file is the config a gateway runs on, so it is the secret file, and CI checks that the placeholder
+  the script wrote is the key the gateway then presents, which is what says the file a reader reads is
+  the file that runs.
 - `docker-compose.yml`: the production shape — loopback-only mapping, read-only root, all
-  capabilities dropped, `no-new-privileges`, pid and memory limits, 30 second stop grace, keys
-  from a 600-permission `.env`. Checked by starting it for real.
+  capabilities dropped, `no-new-privileges`, pid and memory limits, 30 second stop grace, and the
+  config file mounted read-only as a directory rather than as a single file, because a single-file
+  bind mount pins the inode the container started with and a live reload would then see nothing. The
+  host keeps the directory at 700 and the file at 600. Checked by starting it for real on a machine
+  with a docker daemon; the bind-mount behaviour itself is stated as a deployment fact and confirmed
+  where the daemon runs.
 
 ### Fixes found by the tests during this release
 

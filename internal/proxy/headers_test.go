@@ -15,7 +15,7 @@ import (
 // including the cases a client controls.
 
 func TestHopByHopHeadersAreDroppedInBothDirections(t *testing.T) {
-	cfg, err := config.Parse([]byte("routes:\n  m:\n    targets:\n      - name: a\n        model: m\n        base_url: https://fake.invalid/v1\n        api_key_env: KEY_A\n"), config.Env{"KEY_A": "key-a"})
+	cfg, err := config.Parse([]byte("routes:\n  m:\n    targets:\n      - name: a\n        model: m\n        base_url: https://fake.invalid/v1\n        api_key: key-a\n"))
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestHopByHopHeadersAreDroppedInBothDirections(t *testing.T) {
 // the client chooses the model, not the key. A client that sends its own Authorization
 // must not be able to aim a request at a key the operator did not give it.
 func TestAuthorizationIsAlwaysTheConfiguredKey(t *testing.T) {
-	cfg, err := config.Parse([]byte("routes:\n  m:\n    targets:\n      - name: a\n        model: m\n        base_url: https://fake.invalid/v1\n        api_key_env: KEY_A\n"), config.Env{"KEY_A": "key-a"})
+	cfg, err := config.Parse([]byte("routes:\n  m:\n    targets:\n      - name: a\n        model: m\n        base_url: https://fake.invalid/v1\n        api_key: key-a\n"))
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
@@ -89,8 +89,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`), config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`))
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
@@ -129,8 +129,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`), config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`))
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
@@ -165,11 +165,11 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
         headers:
           X-Target-Header: target
           Connection: close
-`), config.Env{"KEY_A": "key-a"})
+`))
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
@@ -198,8 +198,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`), config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`))
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}

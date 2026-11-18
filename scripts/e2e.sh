@@ -176,7 +176,7 @@ cat > "$WORK/behaviors.json" <<'JSON'
     "status": 200,
     "body": "{\"object\":\"chat.completion\",\"choices\":[]}"
   },
-  "gen-key-1": {
+  "REPLACE_ME_ACCOUNT_1": {
     "status": 200,
     "body": "{\"object\":\"chat.completion\",\"choices\":[]}"
   },
@@ -263,47 +263,47 @@ routes:
       - name: streamer
         model: stream
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_STREAM
+        api_key: e2e-stream
   two:
     targets:
       - name: account-a
         model: two
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_429
+        api_key: e2e-429
       - name: account-b
         model: two
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_STREAM
+        api_key: e2e-stream
   allcooling:
     targets:
       - name: c1
         model: allcooling
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_429
+        api_key: e2e-429
       - name: c2
         model: allcooling
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_429
+        api_key: e2e-429
       - name: c3
         model: allcooling
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_429
+        api_key: e2e-429
       - name: c4
         model: allcooling
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_429
+        api_key: e2e-429
   toolcall:
     targets:
       - name: tool
         model: toolcall
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_TOOL
+        api_key: e2e-tool
   cancel:
     targets:
       - name: cancellable
         model: cancel
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_CANCEL
+        api_key: e2e-cancel
   forwardcheck:
     targets:
       # The model here is longer than the route name, so the body the upstream is told about
@@ -311,7 +311,7 @@ routes:
       - name: forwarder
         model: e2e-forward-model
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_PLAIN
+        api_key: e2e-plain
         headers:
           X-Zq-Target: from-target
   forwardpath:
@@ -320,56 +320,51 @@ routes:
         model: forwardpath
         base_url: http://127.0.0.1:8091/v1
         path: /zq-endpoint
-        api_key_env: E2E_PLAIN
+        api_key: e2e-plain
   gzipcheck:
     targets:
       - name: gzipped
         model: gzipcheck
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_GZIP
+        api_key: e2e-gzip
   distleast:
     targets:
       - name: d1
         model: distleast
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_DIST_1
+        api_key: e2e-dist-1
       - name: d2
         model: distleast
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_DIST_2
+        api_key: e2e-dist-2
       - name: d3
         model: distleast
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_DIST_3
+        api_key: e2e-dist-3
       - name: d4
         model: distleast
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_DIST_4
+        api_key: e2e-dist-4
   rafar:
     targets:
       - name: far-future
         model: rafar
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_RAFAR
+        api_key: e2e-rafar
   unmapped:
     targets:
       - name: not-in-the-map
         model: unmapped
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_500
+        api_key: e2e-500
   safety503:
     targets:
       - name: service-level-503
         model: safety503
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_503
+        api_key: e2e-503
 YAML
 
-export E2E_STREAM=e2e-stream E2E_429=e2e-429 E2E_TOOL=e2e-tool E2E_CANCEL=e2e-cancel
-export E2E_PLAIN=e2e-plain E2E_GZIP=e2e-gzip E2E_ALLOW=e2e-allow E2E_500=e2e-500
-export E2E_503=e2e-503 E2E_SIZE=e2e-size
-export E2E_RAFAR=e2e-rafar E2E_RAFAR_2=e2e-rafar-2
-for i in 1 2 3 4 5 6 7 8; do export "E2E_DIST_$i=e2e-dist-$i"; done
 
 "$BIN/plainroute-fakeupstream" -listen 127.0.0.1:8091 -behaviors "$WORK/behaviors.json" > "$WORK/fake.log" 2>&1 &
 FAKE_PID=$!
@@ -476,11 +471,10 @@ routes:
       - name: gated
         model: stream
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_STREAM
+        api_key: e2e-stream
 auth:
-  api_key_env: E2E_CALLER
+  api_key: e2e-caller
 YAML
-export E2E_CALLER=e2e-caller
 
 "$BIN/plainroute" -config "$WORK/gate-config.yaml" > "$WORK/gate.log" 2>&1 &
 GATE_PID=$!
@@ -504,7 +498,8 @@ check "the health endpoint is not gated" "ok" "$(curl -s http://127.0.0.1:8092/h
 has "the gate is counted on the metrics page" 'invalid_api_key' "$(curl -s http://127.0.0.1:8092/metrics)"
 has "the metrics page prints the route label, not model" 'plainroute_gateway_rejected_total{code="invalid_api_key",route="none"}' "$(curl -s http://127.0.0.1:8092/metrics)"
 not_has "no value taken from client input appears as a label" 'e2e-caller' "$(curl -s http://127.0.0.1:8092/metrics)"
-has "the startup line reports the gate and names the variable it read" 'api_key_env' "$(head -1 "$WORK/gate.log")"
+has "the startup line reports the gate as on" '"gate":"on"' "$(head -1 "$WORK/gate.log")"
+has "and names the file it read, so a reader can tell which file this gateway is on" 'config' "$(head -1 "$WORK/gate.log")"
 not_has "the startup line does not print the value" 'e2e-caller' "$(head -1 "$WORK/gate.log")"
 not_has "the caller key value does not appear in the log" 'e2e-caller' "$(cat "$WORK/gate.log")"
 
@@ -617,7 +612,7 @@ routes:
       - name: allowlisted
         model: allowcheck
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_ALLOW
+        api_key: e2e-allow
 YAML
 start_gateway "$WORK/allow-config.yaml" "$WORK/allow.log"
 
@@ -655,19 +650,19 @@ routes:
       - name: r1
         model: distround
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_DIST_5
+        api_key: e2e-dist-5
       - name: r2
         model: distround
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_DIST_6
+        api_key: e2e-dist-6
       - name: r3
         model: distround
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_DIST_7
+        api_key: e2e-dist-7
       - name: r4
         model: distround
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_DIST_8
+        api_key: e2e-dist-8
 YAML
 start_gateway "$WORK/round-config.yaml" "$WORK/round.log"
 
@@ -685,72 +680,69 @@ check "round_robin: second target" "3" "$(count e2e-dist-6)"
 check "round_robin: third target" "3" "$(count e2e-dist-7)"
 check "round_robin: fourth target" "3" "$(count e2e-dist-8)"
 
-printf '\n11. startup: a key is a name, and every missing name is reported at once\n'
+printf '\n11. startup: the file is the secret, a bad file is a startup failure, and the failure does not print it\n'
+# Startup stays strict, and it can: before the first configuration there is no last-known-good one to
+# serve with, so a file that is missing, unreadable or invalid stops the process before it listens.
+# Each startup check has a timeout: if a build stopped reporting the problem and let the process
+# start, that process would listen and never exit, and the script would hang instead of failing.
+#
+# The needle below is a value that must never come back out of the process. It is used as a key, and
+# nothing in the code can find a key wrong except that it is empty, so the only values a message can
+# echo are the ones it is complaining about. A message that printed the value it found would print
+# this one, and these checks would fail.
+secret=PLAINROUTE_TEST_SECRET_DO_NOT_LEAK_918273645
+
+out=$(timeout 10 "$BIN/plainroute" -config "$WORK/no-such-file.yaml" 2>&1); code=$?
+check "a config file that is not there stops the process before it listens" "1" "$code"
+has "and says what it could not read" 'read config' "$out"
+
+# A key is a value in the file now, so a target with no key is not a variable that is unset: it is a
+# field this package refuses, and the error names the target it was reading, because a file with a
+# hundred targets is only actionable when the error says which one.
 cat > "$WORK/badkey.yaml" <<'YAML'
 server:
+  # Each startup fixture gets its own port: a process that fails for a different reason, such as a
+  # port already taken by a gateway this script started, would answer the exit-code checks.
   listen: 127.0.0.1:8095
 routes:
   startupcheck:
     targets:
-      - name: written-as-a-value
+      - name: no-key-written
         model: startupcheck
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: sk-zq-not-a-variable-name
-      - name: missing-one
-        model: startupcheck
-        base_url: http://127.0.0.1:8091/v1
-        api_key_env: ZQ_MISSING_ONE
-      - name: missing-two
-        model: startupcheck
-        base_url: http://127.0.0.1:8091/v1
-        api_key_env: ZQ_MISSING_TWO
+        api_key: ""
 YAML
-# Each startup check has a timeout: if a build stops reporting the problem and lets the process
-# start, the process would listen and never exit, and the script would hang instead of failing.
 out=$(timeout 10 "$BIN/plainroute" -config "$WORK/badkey.yaml" 2>&1); code=$?
-check "a key written as a value stops the process before it listens" "1" "$code"
-has "and names what it was given as a variable that is not set" \
-  'sk-zq-not-a-variable-name is not set' "$out"
-has "the error reports every missing name, not only the first" 'ZQ_MISSING_ONE is not set' "$out"
-has "so the second missing name is in the same error" 'ZQ_MISSING_TWO is not set' "$out"
+check "a target with no key stops the process before it listens" "1" "$code"
+has "and says what it refused" 'api_key is required' "$out"
+has "and names the target, so the error is actionable in a file with a hundred of them" 'no-key-written' "$out"
 
-cat > "$WORK/badref.yaml" <<'YAML'
+# Every problem at once, so an operator fixes the file in one pass instead of one error per run.
+cat > "$WORK/badmany.yaml" <<YAML
 server:
-  # Each startup fixture gets its own port: a process that fails for a different reason, such as
-  # a port already taken by a gateway this script started, would answer the exit-code checks.
+  # Not 8096: a gateway this script starts later listens there, and a process that failed for the
+  # wrong reason would answer this check.
   listen: 127.0.0.1:8097
+  max_request_bytes: -1
+timeouts:
+  connect: -1s
+logging:
+  level: shout
 routes:
   startupcheck:
     targets:
-      - name: reference-without-a-default
+      - name: every-problem-at-once
         model: startupcheck
-        base_url: http://127.0.0.1:8091/v1
-        # The reference is put where an empty value would be accepted, so the exit code is
-        # attributable to the unset reference alone. On base_url the same process would still
-        # exit for a different reason, and the check would pass for the wrong reason.
-        path: ${ZQ_MISSING_REF}
-        api_key_env: E2E_PLAIN
+        base_url: https://example.invalid/v1?token=x
+        api_key: $secret
 YAML
-out=$(timeout 10 "$BIN/plainroute" -config "$WORK/badref.yaml" 2>&1); code=$?
-check "an environment reference without a default stops the process" "1" "$code"
-has "and names the reference" 'ZQ_MISSING_REF' "$out"
-
-cat > "$WORK/default.yaml" <<'YAML'
-server:
-  listen: 127.0.0.1:8098
-routes:
-  startupcheck:
-    targets:
-      - name: reference-with-a-default
-        model: startupcheck
-        base_url: ${ZQ_UNSET_BASE:-http://127.0.0.1:8091/v1}
-        api_key_env: E2E_PLAIN
-YAML
-start_gateway "$WORK/default.yaml" "$WORK/default.log"
-check "the default is used when the variable is not set, and the process starts" "ok" \
-  "$(curl -s http://127.0.0.1:8098/healthz)"
-check "and a request through that route reaches the upstream" "200" \
-  "$(post_to 8098 startupcheck /dev/null)"
+out=$(timeout 10 "$BIN/plainroute" -config "$WORK/badmany.yaml" 2>&1); code=$?
+check "a file with several problems stops the process" "1" "$code"
+has "and reports the size limit, the duration and the level together" 'max_request_bytes' "$out"
+has "so the negative size is in the same error" 'positive' "$out"
+has "and the bad level is in it too" 'level' "$out"
+has "and the query in the url is in it too" 'query' "$out"
+not_has "and none of them prints the value the file holds" "$secret" "$out"
 
 printf '\n12. the cooldown window: the clamp, the map, and what a reload keeps\n'
 # The number a client sees is the window the gateway applied, not the number the upstream
@@ -791,7 +783,7 @@ routes:
       - name: no-clamp
         model: rafar2
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_RAFAR_2
+        api_key: e2e-rafar-2
 YAML
 start_gateway "$WORK/clampoff.yaml" "$WORK/clampoff.log"
 
@@ -827,7 +819,7 @@ routes:
       - name: negative-clamp
         model: startupcheck
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_PLAIN
+        api_key: e2e-plain
 YAML
 out=$(timeout 10 "$BIN/plainroute" -config "$WORK/badmax.yaml" 2>&1); code=$?
 check "a negative clamp is a startup error rather than a silent no clamp" "1" "$code"
@@ -879,7 +871,7 @@ routes:
       - name: bad-reload
         model: newroute
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_PLAIN
+        api_key: e2e-plain
 YAML
 kill -HUP "$GATEWAY_PID"
 sleep 1
@@ -952,7 +944,7 @@ routes:
       - name: at-the-cap
         model: e2e-size-model
         base_url: http://127.0.0.1:8091/v1
-        api_key_env: E2E_SIZE
+        api_key: e2e-size
 YAML
 start_gateway "$WORK/sizes.yaml" "$WORK/sizes.log"
 
@@ -1018,9 +1010,8 @@ printf '\n15. the generator: the numbers it writes, the parameters that change t
 # itself, which is the only way to say "its output is a config" instead of "its output is text that
 # looks like a config".
 printf '%s' '["glm-4.5", "qwen3:8b"]' > "$WORK/models.json"
-export GEN_KEY_1=gen-key-1
 
-python3 "$ROOT/scripts/generate-config.py" --models "$WORK/models.json" --keys 1 --key-prefix GEN_KEY \
+python3 "$ROOT/scripts/generate-config.py" --models "$WORK/models.json" --keys 1 \
   --base-url http://127.0.0.1:8091/v1 --listen 127.0.0.1:8101 --out "$WORK/gen.yaml" > "$WORK/gen.out" 2>&1
 check "the generator runs from a snapshot, so this case never contacts an upstream" "0" "$?"
 has "the request limit it writes is the recommended 32 MiB" 'max_request_bytes: 33554432' "$(cat "$WORK/gen.yaml")"
@@ -1029,7 +1020,7 @@ has "the clamp is the recommended 30s" '^[ ]*max: 30s' "$(cat "$WORK/gen.yaml")"
 has "429 keeps the documented prior" '^[ ]*429: 10s' "$(cat "$WORK/gen.yaml")"
 has "and 503 writes no window, which is the default this script chose" '^[ ]*503: 0s' "$(cat "$WORK/gen.yaml")"
 
-python3 "$ROOT/scripts/generate-config.py" --models "$WORK/models.json" --keys 1 --key-prefix GEN_KEY \
+python3 "$ROOT/scripts/generate-config.py" --models "$WORK/models.json" --keys 1 \
   --base-url http://127.0.0.1:8091/v1 --listen 127.0.0.1:8101 \
   --max-request-bytes 1048576 --max-response-bytes 2097152 --cooldown-max 6s --cooldown-503 20s \
   --out "$WORK/gen2.yaml" > "$WORK/gen2.out" 2>&1
@@ -1038,8 +1029,14 @@ has "--max-request-bytes is written as it was given" 'max_request_bytes: 1048576
 has "--max-response-bytes is written as it was given" 'max_response_bytes: 2097152' "$(cat "$WORK/gen2.yaml")"
 has "--cooldown-max is written as it was given" '^[ ]*max: 6s' "$(cat "$WORK/gen2.yaml")"
 has "--cooldown-503 is written as it was given" '^[ ]*503: 20s' "$(cat "$WORK/gen2.yaml")"
-has "and the generator writes the name of a variable, never a key" 'api_key_env: GEN_KEY_1' "$(cat "$WORK/gen2.yaml")"
-not_has "so a generated file cannot be committed with a key in it" 'gen-key-1' "$(cat "$WORK/gen2.yaml")"
+has "and what it writes for a key is a placeholder, so a generated file can be committed without a secret in it" \
+  'api_key: REPLACE_ME_ACCOUNT_1' "$(cat "$WORK/gen2.yaml")"
+# An argument is the only way a script can be handed a value. `--keys` says how many slots, and there
+# is no argument that takes a key, so a real key gets into the file only when a person types it in.
+has "so the help text has no argument that could hold a key" 'usage: generate-config.py' "$(python3 "$ROOT/scripts/generate-config.py" --help 2>&1)"
+not_has "and no argument name here can write a key into the file it makes" '--key-prefix' "$(python3 "$ROOT/scripts/generate-config.py" --help 2>&1)"
+has "and the file tells a reader what to do with each placeholder" \
+  'Each REPLACE_ME_ACCOUNT_n is a slot to fill in' "$(cat "$WORK/gen2.yaml")"
 
 start_gateway "$WORK/gen.yaml" "$WORK/gen.log"
 check "the generated file is a config the gateway accepts, not only text that looks like one" \
@@ -1048,6 +1045,8 @@ status=$(post_to 8101 glm-4.5 "$WORK/genreq.out")
 check "and a request through a generated route reaches the upstream" "200" "$status"
 has "and the answer is the one this key is configured for, so the route the script wrote is the route the gateway reads" \
   'chat.completion' "$(cat "$WORK/genreq.out")"
+has "and the key the upstream was given is the placeholder the script wrote, which is what says the file a reader reads is the file that runs" \
+  'key=REPLACE_ME_ACCOUNT_1' "$(last REPLACE_ME_ACCOUNT_1)"
 
 printf "\n16. the live smoke script, run against the project's own fake upstream\n"
 # CI cannot check anybody's provider, so this runs the script against the fake upstream: what is

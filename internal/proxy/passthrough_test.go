@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/40960/plainroute/internal/config"
 	"github.com/40960/plainroute/internal/fakeupstream"
 )
 
@@ -26,7 +25,7 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
+        api_key: key-a
 `
 
 func TestProviderErrorShapesAreForwardedUnchanged(t *testing.T) {
@@ -64,7 +63,7 @@ func TestProviderErrorShapesAreForwardedUnchanged(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		h := newHarness(t, singleTarget, config.Env{"KEY_A": "key-a"})
+		h := newHarness(t, singleTarget)
 		h.fake.Set("key-a", fakeupstream.Behavior{Status: c.code, Body: c.body,
 			Headers: map[string]string{"Content-Type": c.contentType}})
 
@@ -94,7 +93,7 @@ func TestErrorStatusIsNeverChangedBecauseTheGatewayHasNoTableOfKnownErrors(t *te
 	body := `{"detail":"a shape nobody here knows","code":40001}`
 
 	for _, code := range []int{400, 401, 403, 404, 409, 413, 422, 429, 500, 502, 503, 504} {
-		h := newHarness(t, singleTarget, config.Env{"KEY_A": "key-a"})
+		h := newHarness(t, singleTarget)
 		h.fake.Set("key-a", fakeupstream.Behavior{Status: code, Body: body})
 
 		resp, out := h.post(chatBody("m"))
@@ -138,7 +137,7 @@ func TestErrorBodyPassesThroughAndOnlyRetryAfterChanges(t *testing.T) {
 			"900",
 		},
 	} {
-		h := newHarness(t, singleTarget+c.cfg, config.Env{"KEY_A": "key-a"})
+		h := newHarness(t, singleTarget+c.cfg)
 		h.fake.Set("key-a", fakeupstream.Behavior{Status: 429, Body: body,
 			Headers: map[string]string{"Retry-After": "900"}})
 
@@ -162,7 +161,7 @@ func TestErrorBodyPassesThroughAndOnlyRetryAfterChanges(t *testing.T) {
 // before any frame is copied is the same passthrough, and the bytes of an SSE body are not reformed
 // into a JSON error the client would have to recognise.
 func TestStreamErrorIsForwardedAsTheUpstreamProducedIt(t *testing.T) {
-	h := newHarness(t, singleTarget, config.Env{"KEY_A": "key-a"})
+	h := newHarness(t, singleTarget)
 
 	frames := []string{
 		"data: {\"status\":503,\"title\":\"content safety screening is temporarily unavailable\"}\n\n",

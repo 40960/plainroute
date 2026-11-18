@@ -2,27 +2,25 @@
 
 // Package config loads PlainRoute's YAML configuration.
 //
-// PlainRoute is a single process with no database and no external service:
-// everything it needs is described in one file. Secrets are never written in
-// that file - a target names an environment variable and the value is read
-// at startup, so the configuration itself can be committed to a repository.
+// PlainRoute is a single process with no database and no external service: everything it needs is
+// described in one file, and the api keys are values in that file. The file a gateway actually runs
+// on is therefore a secret: it is gitignored, it needs 600 permissions, and nothing in this package
+// prints a value it read from it. There is no second source for a credential - no environment
+// lookup, no separate secret file, no cache, no refresh subsystem - because a value that can come
+// from two places is a value a reader cannot tell which one is in force.
 //
-// String values support environment substitution:
-//
-//	${NAME}          replaced by the value of NAME
-//	${NAME:-default} replaced by NAME, or by default when NAME is unset
-//
-// Substitution happens on the raw file before YAML parsing, so it works for any
-// string value.
+// What this package returns is one snapshot, not a live view: a caller loads it and keeps it for the
+// whole request. Watching the file for changes is a different package, and it swaps one whole
+// snapshot for another.
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,23 +28,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-// Env is the environment lookup used while loading. It is a parameter so tests
-// can supply their own values without touching the process environment.
-type Env map[string]string
-
-// DefaultEnv reads the real process environment.
-func DefaultEnv() Env {
-	env := Env{}
-	for _, entry := range os.Environ() {
-		name, value, ok := strings.Cut(entry, "=")
-		if !ok {
-			continue
-		}
-		env[name] = value
-	}
-	return env
-}
 
 // Duration accepts YAML values such as "10s", "5m" or "1h30m". A plain number is
 // read as seconds, which keeps short timeouts readable in a config file.
@@ -89,19 +70,14 @@ type Config struct {
 	Routes   map[string]RouteConfig `yaml:"routes"`
 }
 
-// AuthConfig is the api key a caller presents, read from the environment. It is a single
-// value, not a table of keys: a gateway that knows who its callers are needs accounts, and
-// accounts are the point this project stays out of.
+// AuthConfig is the api key a caller presents. It is a single value, not a table of keys: a
+// gateway that knows who its callers are needs accounts, and accounts are the point this project
+// stays out of.
 //
-// Empty means off, which is also what an absent block means. A key that is named but not
-// present in the environment is a startup failure, because a half-configured gate reads as
-// a working one.
+// Empty means off, which is also what an absent block means. There is no half state left: the value
+// in the file is the value in force, so a gate that reads as on in the file is on.
 type AuthConfig struct {
-	APIKeyEnv string `yaml:"api_key_env"`
-
-	// APIKey is resolved from APIKeyEnv at load. It is never logged and never written
-	// back to YAML.
-	APIKey string `yaml:"-"`
+	APIKey string `yaml:"api_key"`
 }
 
 type ServerConfig struct {
@@ -228,20 +204,18 @@ type RouteConfig struct {
 }
 
 // TargetConfig is one upstream: a model name, an endpoint and one key. Two targets can differ by
-// any of them, which is why "the same model with a different key" is one case of a target, not
-// its definition.
+// any of them, which is why "the same model with a different key" is one case of a target, not its
+// definition. The key is a value in this file, so this file is a secret: it is gitignored and needs
+// 600 permissions. A test fixture may hold an obviously fake key; a file a gateway runs on holds a
+// real one, and nothing in this project prints what it reads here.
 type TargetConfig struct {
 	Name      string            `yaml:"name"`
 	Model     string            `yaml:"model"`
 	BaseURL   string            `yaml:"base_url"`
-	APIKeyEnv string            `yaml:"api_key_env"`
+	APIKey    string            `yaml:"api_key"`
 	Path      string            `yaml:"path"`
 	Headers   map[string]string `yaml:"headers"`
 	MaxActive int               `yaml:"max_active"`
-
-	// APIKey is resolved from APIKeyEnv at load. It is never logged and never
-	// written back to YAML.
-	APIKey string `yaml:"-"`
 }
 
 const (
@@ -251,26 +225,24 @@ const (
 	DefaultEndpoint = "/chat/completions"
 )
 
-// envPattern matches ${NAME} and ${NAME:-default}.
-var envPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
-
-// Load reads, expands and validates a configuration file.
-func Load(file string, env Env) (*Config, error) {
+// Load reads a configuration file and validates it. Startup stays strict: before the first config
+// exists there is no last-known-good one to serve with, so a missing, unreadable or invalid file is
+// a startup failure and the process does not listen.
+func Load(file string) (*Config, error) {
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	return Parse(data, env)
+	return Parse(data)
 }
 
-// Parse expands environment references, decodes YAML and validates.
-func Parse(data []byte, env Env) (*Config, error) {
-	expanded, err := expandEnv(data, env)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := yaml.NewDecoder(strings.NewReader(string(expanded)))
+// Parse decodes YAML and validates. The error text names the problem and never repeats a value it
+// read from the file, because a config value can be a secret and this error is what a log line, a
+// terminal and a bug report show. The yaml package reports line numbers and problems, not the text
+// on the line, which is what makes it safe to print this error; the check in validate below is the
+// same rule, stated as a test.
+func Parse(data []byte) (*Config, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 
 	cfg := &Config{}
@@ -279,34 +251,10 @@ func Parse(data []byte, env Env) (*Config, error) {
 	}
 
 	applyDefaults(cfg)
-	if err := validate(cfg, env); err != nil {
+	if err := validate(cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
-}
-
-func expandEnv(data []byte, env Env) ([]byte, error) {
-	var problems []string
-	out := envPattern.ReplaceAllFunc(data, func(match []byte) []byte {
-		expr := string(match[2 : len(match)-1])
-		name, def, hasDefault := strings.Cut(expr, ":-")
-		if name == "" {
-			problems = append(problems, "empty environment reference")
-			return match
-		}
-		if v, ok := env[name]; ok && v != "" {
-			return []byte(v)
-		}
-		if hasDefault {
-			return []byte(def)
-		}
-		problems = append(problems, fmt.Sprintf("environment variable %s is not set", name))
-		return match
-	})
-	if len(problems) > 0 {
-		return nil, errors.New(problems[0])
-	}
-	return out, nil
 }
 
 func applyDefaults(cfg *Config) {
@@ -377,8 +325,7 @@ func applyDefaults(cfg *Config) {
 	}
 }
 
-// validate reports every problem at once, so a startup failure is actionable.
-func validate(cfg *Config, env Env) error {
+func validate(cfg *Config) error {
 	var problems []string
 
 	if cfg.Server.Listen == "" {
@@ -449,14 +396,6 @@ func validate(cfg *Config, env Env) error {
 		problems = append(problems, "metrics.path must start with /")
 	}
 
-	if cfg.Auth.APIKeyEnv != "" {
-		key := env[cfg.Auth.APIKeyEnv]
-		if key == "" {
-			problems = append(problems, fmt.Sprintf("auth.api_key_env %s is not set", cfg.Auth.APIKeyEnv))
-		}
-		cfg.Auth.APIKey = key
-	}
-
 	if len(cfg.Routes) == 0 {
 		problems = append(problems, "at least one route must be configured")
 	}
@@ -479,7 +418,13 @@ func validate(cfg *Config, env Env) error {
 		seenName := map[string]bool{}
 		for i := range route.Targets {
 			t := &route.Targets[i]
+			// The name the operator wrote is what identifies a target once a file has more than a few
+			// of them, so an error that only gives a position is not actionable. The position is kept
+			// because a target with no name is one of the problems this reports.
 			where := fmt.Sprintf("route %q target %d", routeName, i+1)
+			if t.Name != "" {
+				where = fmt.Sprintf("%s (%s)", where, t.Name)
+			}
 			if t.Name == "" {
 				problems = append(problems, fmt.Sprintf("%s: name is required", where))
 			} else if seenName[t.Name] {
@@ -504,14 +449,8 @@ func validate(cfg *Config, env Env) error {
 				problems = append(problems, fmt.Sprintf("%s: base_url must not contain a query", where))
 			}
 
-			if t.APIKeyEnv == "" {
-				problems = append(problems, fmt.Sprintf("%s: api_key_env is required", where))
-			} else {
-				key := env[t.APIKeyEnv]
-				if key == "" {
-					problems = append(problems, fmt.Sprintf("%s: environment variable %s is not set", where, t.APIKeyEnv))
-				}
-				t.APIKey = key
+			if t.APIKey == "" {
+				problems = append(problems, fmt.Sprintf("%s: api_key is required", where))
 			}
 			if t.Path != "" && !strings.HasPrefix(t.Path, "/") {
 				problems = append(problems, fmt.Sprintf("%s: path must start with /", where))

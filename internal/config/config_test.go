@@ -16,8 +16,8 @@ routes:
       - name: account-1
         model: provider/model-one
         base_url: https://api.example.com/v1
-        api_key_env: EXAMPLE_API_KEY_1
-`), Env{"EXAMPLE_API_KEY_1": "test-key"})
+        api_key: test-key
+`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -75,8 +75,8 @@ routes:
       - name: a
         model: m
         base_url: https://api.example.com/v1
-        api_key_env: K
-`), Env{"K": "x"})
+        api_key: x
+`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -95,19 +95,17 @@ routes:
       - name: a
         model: m
         base_url: https://api.example.com/v1
-        api_key_env: K
-`), Env{"K": "x"})
+        api_key: x
+`))
 	if err == nil || !strings.Contains(err.Error(), "positive") {
 		t.Errorf("negative max: got %v, want a startup error", err)
 	}
 }
 
-func TestParseResolvesSecretsFromEnvironment(t *testing.T) {
-	env := Env{
-		"EXAMPLE_API_KEY_1": "key-one",
-		"EXAMPLE_API_KEY_2": "key-two",
-		"LOCAL_API_KEY":     "local-key",
-	}
+// The key is a value in the file, so what a reader sees in the file is what runs. That is the whole
+// point of this change: there is no second place a value can come from, and therefore no way for a
+// config that reads one way to behave another way.
+func TestKeysAreValuesInTheFile(t *testing.T) {
 	cfg, err := Parse([]byte(`
 routes:
   demo:
@@ -115,18 +113,18 @@ routes:
       - name: account-one
         model: provider/model-one
         base_url: https://api.example.com/v1
-        api_key_env: EXAMPLE_API_KEY_1
+        api_key: key-one
       - name: account-two
         model: provider/model-one
         base_url: https://api.example.com/v1
-        api_key_env: EXAMPLE_API_KEY_2
+        api_key: key-two
   local:
     targets:
       - name: llama-cpp
         model: llama-3.1-8b
-        base_url: ${LOCAL_BASE_URL:-http://127.0.0.1:8081}/v1
-        api_key_env: LOCAL_API_KEY
-`), env)
+        base_url: http://127.0.0.1:8081/v1
+        api_key: local-key
+`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -136,19 +134,34 @@ routes:
 		t.Fatalf("targets: got %d, want 2", len(targets))
 	}
 	if targets[0].APIKey != "key-one" || targets[1].APIKey != "key-two" {
-		t.Errorf("keys resolved incorrectly: %q %q", targets[0].APIKey, targets[1].APIKey)
+		t.Errorf("keys read incorrectly: %q %q", targets[0].APIKey, targets[1].APIKey)
+	}
+	if cfg.Routes["local"].Targets[0].APIKey != "local-key" {
+		t.Errorf("local key: got %q, want local-key", cfg.Routes["local"].Targets[0].APIKey)
 	}
 
-	local := cfg.Routes["local"].Targets[0]
-	if local.BaseURL != "http://127.0.0.1:8081/v1" {
-		t.Errorf("env default: got %q, want http://127.0.0.1:8081/v1", local.BaseURL)
+	// An environment reference is no longer something this package expands: the text in the file is
+	// the value, so a reader can tell from the file alone what is in force, which is the property this
+	// change is about. A reference is not expanded, and so is not a startup failure either, which is
+	// why the startup rule about unset variables went with it.
+	cfg, err = Parse([]byte(`
+routes:
+  m:
+    targets:
+      - name: a
+        model: m
+        base_url: http://127.0.0.1:8081/v1
+        api_key: ${NOT_EXPANDED}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-	if local.APIKey != "local-key" {
-		t.Errorf("local key: got %q, want local-key", local.APIKey)
+	if got := cfg.Routes["m"].Targets[0].APIKey; got != "${NOT_EXPANDED}" {
+		t.Errorf("an environment reference: got %q, want the text as it is written in the file", got)
 	}
 }
 
-func TestParseRejectsMissingSecret(t *testing.T) {
+func TestTargetKeyIsRequired(t *testing.T) {
 	_, err := Parse([]byte(`
 routes:
   demo:
@@ -156,13 +169,16 @@ routes:
       - name: account-one
         model: provider/model-one
         base_url: https://api.example.com/v1
-        api_key_env: EXAMPLE_API_KEY_MISSING
-`), Env{})
+        api_key: ""
+`))
 	if err == nil {
-		t.Fatal("expected an error for a missing api_key_env")
+		t.Fatal("expected an error for a target with no api key")
 	}
-	if !strings.Contains(err.Error(), "EXAMPLE_API_KEY_MISSING") {
-		t.Errorf("error should name the variable, got: %v", err)
+	if !strings.Contains(err.Error(), "api_key is required") {
+		t.Errorf("got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "account-one") {
+		t.Errorf("the error should name the target: %v", err)
 	}
 }
 
@@ -187,22 +203,22 @@ routes:
       - name: ""
         model: 
         base_url: ftp://example.invalid/v1
-        api_key_env: MISSING_KEY
+        api_key: ""
       - name: dup
         model: 
         base_url: https://example.invalid/v1?token=x
-        api_key_env: OK_KEY
+        api_key: x
       - name: dup
         model: 
         base_url: https://user:pass@example.invalid/v1
-        api_key_env: OK_KEY
-`), Env{"OK_KEY": "x"})
+        api_key: x
+`))
 	if err == nil {
 		t.Fatal("expected validation errors")
 	}
 	for _, want := range []string{
 		"random", "connect", "mode", "level", "model is required",
-		"ftp", "credentials", "query", "MISSING_KEY", "dup", "positive",
+		"ftp", "credentials", "query", "api_key is required", "dup", "positive",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error is missing %q:\n%v", want, err)
@@ -220,8 +236,8 @@ server:
   max_request_bytes: -1
 routes:
   m:
-    targets: [{name: a, model: m, base_url: http://127.0.0.1:8081, api_key_env: K}]
-`), Env{"K": "x"})
+    targets: [{name: a, model: m, base_url: http://127.0.0.1:8081, api_key: key}]
+`))
 	if err == nil {
 		t.Fatal("expected an error for a negative size limit")
 	}
@@ -240,8 +256,8 @@ server:
   max_response_bytes: 0
 routes:
   m:
-    targets: [{name: a, model: m, base_url: http://127.0.0.1:8081, api_key_env: K}]
-`), Env{"K": "x"})
+    targets: [{name: a, model: m, base_url: http://127.0.0.1:8081, api_key: key}]
+`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -257,8 +273,8 @@ timeouts:
   connect: soon
 routes:
   m:
-    targets: [{name: a, base_url: http://127.0.0.1:8081, api_key_env: K}]
-`), Env{"K": "x"})
+    targets: [{name: a, base_url: http://127.0.0.1:8081, api_key: key}]
+`))
 	if err == nil {
 		t.Fatal("expected a duration error")
 	}
@@ -278,8 +294,8 @@ routes:
       - name: a
         model: m
         base_url: http://127.0.0.1:8081
-        api_key_env: K
-`), Env{"K": "x"})
+        api_key: x
+`))
 	if err == nil {
 		t.Fatal("expected an error for an unknown config key")
 	}
@@ -291,18 +307,17 @@ routes:
 func TestFallbackCyclesAreRefusedWhenEnabled(t *testing.T) {
 	// Cycle detection runs only when fallbacks are opt-in, so a config that
 	// describes a graph but keeps fallbacks off stays loadable.
-	env := Env{"K": "x"}
 	_, err := Parse([]byte(`
 fallbacks:
   enabled: true
 routes:
   a:
     fallbacks: [b]
-    targets: [{name: d1, base_url: http://127.0.0.1:8081, api_key_env: K}]
+    targets: [{name: d1, base_url: http://127.0.0.1:8081, api_key: key}]
   b:
     fallbacks: [a]
-    targets: [{name: d2, base_url: http://127.0.0.1:8081, api_key_env: K}]
-`), env)
+    targets: [{name: d2, base_url: http://127.0.0.1:8081, api_key: key}]
+`))
 	if err == nil {
 		t.Fatal("expected a cycle error")
 	}
@@ -316,8 +331,8 @@ fallbacks:
 routes:
   a:
     fallbacks: [nope]
-    targets: [{name: d1, base_url: http://127.0.0.1:8081, api_key_env: K}]
-`), env); err == nil {
+    targets: [{name: d1, base_url: http://127.0.0.1:8081, api_key: key}]
+`)); err == nil {
 		t.Fatal("expected an error for an unknown fallback target")
 	}
 
@@ -328,8 +343,8 @@ fallbacks:
 routes:
   a:
     fallbacks: [a]
-    targets: [{name: d1, base_url: http://127.0.0.1:8081, api_key_env: K}]
-`), env); err == nil {
+    targets: [{name: d1, base_url: http://127.0.0.1:8081, api_key: key}]
+`)); err == nil {
 		t.Fatal("expected a self-fallback error")
 	}
 }
@@ -358,7 +373,6 @@ func TestRouteNamesAreStable(t *testing.T) {
 }
 
 func TestMetricsPageIsOnByDefaultAndCanBeTurnedOff(t *testing.T) {
-	env := Env{"K": "x"}
 
 	cfg, err := Parse([]byte(`
 routes:
@@ -367,8 +381,8 @@ routes:
       - name: a
         model: m
         base_url: http://127.0.0.1:8081
-        api_key_env: K
-`), env)
+        api_key: x
+`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -390,8 +404,8 @@ routes:
       - name: a
         model: m
         base_url: http://127.0.0.1:8081
-        api_key_env: K
-`), env)
+        api_key: x
+`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -414,8 +428,8 @@ routes:
       - name: a
         model: m
         base_url: http://127.0.0.1:8081
-        api_key_env: K
-`), Env{"K": "x"})
+        api_key: x
+`))
 	if err == nil {
 		t.Fatal("logging.fields should not be accepted")
 	}

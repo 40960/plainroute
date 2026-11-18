@@ -6,13 +6,12 @@
 *.out
 coverage.out
 
-# Local configuration and secrets. Never commit a real config with keys. The example
-# config is the one file matching this pattern that belongs in the repository.
+# Local configuration and secrets. The config file is the secret: it holds the api keys as
+# values, so a real one is never committed. The example config is the only file matching this
+# pattern that belongs in the repository, and its keys are placeholders.
 /config.yaml
 /config.*.yaml
 !/config.example.yaml
-!.env.example
-.env
 
 # Editors and OS
 .idea/

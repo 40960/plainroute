@@ -10,7 +10,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/40960/plainroute/internal/config"
 	"github.com/40960/plainroute/internal/fakeupstream"
 )
 
@@ -26,8 +25,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	var mu sync.Mutex
 	var hits int
@@ -98,8 +97,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "super-secret-key-value"})
+        api_key: key-a
+`)
 
 	h.fake.Set("super-secret-key-value", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 
@@ -129,8 +128,8 @@ routes:
       - name: a
         model: m
         base_url: https://fake.invalid/v1
-        api_key_env: KEY_A
-`, config.Env{"KEY_A": "key-a"})
+        api_key: key-a
+`)
 
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 

@@ -265,12 +265,12 @@ routes:
       - name: account-1
         model: provider/model-one
         base_url: http://127.0.0.1:8081
-        api_key_env: K1
+        api_key: k1
       - name: account-2
         model: provider/model-one
         base_url: http://127.0.0.1:8082
-        api_key_env: K2
-`), config.Env{"K1": "k1", "K2": "k2"})
+        api_key: k2
+`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -286,16 +286,16 @@ routes:
       - name: account-1
         model: provider/model-one
         base_url: http://127.0.0.1:8081
-        api_key_env: K1
+        api_key: k1
       - name: account-2
         model: provider/model-one
         base_url: http://127.0.0.1:8082
-        api_key_env: K2
+        api_key: k2
       - name: account-3
         model: provider/model-one
         base_url: http://127.0.0.1:8083
-        api_key_env: K3
-`), config.Env{"K1": "k1", "K2": "k2", "K3": "k3"})
+        api_key: k3
+`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -325,14 +325,14 @@ routes:
       - name: a
         model: provider/model-one
         base_url: http://127.0.0.1:8081
-        api_key_env: K
+        api_key: k
   two:
     targets:
       - name: b
         model: provider/model-two
         base_url: http://127.0.0.1:8081
-        api_key_env: K
-`), config.Env{"K": "k"})
+        api_key: k
+`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

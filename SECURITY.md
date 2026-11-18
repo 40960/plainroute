@@ -12,12 +12,12 @@ A fix lands as an ordinary commit, and the advisory is published when the fix is
 
 ## Authentication
 
-The gate is one optional key, and off is the default. `auth.api_key_env` names an environment
-variable; when it resolves to a value, the api key a caller presents in the ordinary
-`Authorization: Bearer` form is compared with it in constant time, on the API endpoints,
-before any byte of the request body is read. Nothing configured means no gate, and that is the
-documented default: anyone who can reach the listening port can then use the configured
-targets, which is why the compose file maps the port on loopback only.
+The gate is one optional key, and off is the default. `auth.api_key` is a value in the config file;
+when it is not empty, the api key a caller presents in the ordinary `Authorization: Bearer` form is
+compared with it in constant time, on the API endpoints, before any byte of the request body is read.
+Nothing configured means no gate, and an empty value means the same thing: anyone who can reach the
+listening port can then use the configured targets, which is why the compose file maps the port on
+loopback only.
 
 What the gate is not, and what is not a bug to be fixed by adding complexity:
 
@@ -26,15 +26,15 @@ What the gate is not, and what is not a bug to be fixed by adding complexity:
   gateway, not inside it.
 - It does not cover the health, readiness or metrics endpoints. Those carry counts only, and a
   monitoring system that cannot authenticate is the ordinary case.
-- A key that is named in the config but is not present in the environment is a startup
-  failure. A gate that reads as on while checking nothing is the failure mode this rule exists
-  to prevent.
-- The variable name should carry this project's prefix (`PLAINROUTE_API_KEY`, not `API_KEY`). A
-  generic name can be exported by another program in the same shell or set by a shared `.env`.
-  The process then starts and compares a value nobody chose for it, which reads as a working gate
-  holding the wrong key. This is the one gate failure the config check cannot catch, because the
-  variable is set. The startup line names the variable it read, never its value, so a collision
-  shows up in the log rather than in the behaviour of a request.
+- There is no half state. The value written in the file is the value in force, so a gate that reads as
+  on in the file is on. Under the old form, `auth.api_key_env` named a variable, and a gate could read
+  as on in the file while the process had nothing to compare against. It could also be on with a value
+  nobody chose for it: a generic name such as `API_KEY` can be exported by another program in the same
+  shell or set by a shared `.env`, so a name collision was a gate failure the config check could not
+  catch, because the variable was set. Writing the value down removes that failure mode, and this is
+  why the environment lookup went away with it.
+- The startup line reports the gate as `on` or `off` and never the value, because printing the value
+  would print a secret into a log line.
 
 The caller key is never logged, never written to a metric label, and never forwarded upstream.
 The key a provider sees is always the target key the operator configured, so a caller
@@ -42,8 +42,16 @@ cannot aim a request at a key it was not given.
 
 ## What it does do
 
-- **Keys stay in the environment.** A config file never contains a key, and the gateway
-  never writes one to a log line, to a metric label, or to an image layer.
+- **The production config is a secret.** It holds the keys as values, so it needs 600 permissions on
+  the host, the directory 700, it is gitignored, and a container mounts it read-only. What a gateway
+  actually runs on is never in the repository; `config.example.yaml` holds placeholders, and the
+  generator writes placeholders, so a script cannot put a key into a file. What is written in the file
+  is what runs, which is the property the old two-source design did not have.
+- **Nothing sensitive is logged.** No key, no `Authorization` header, no prompt content,
+  no response content. The logging package has no field that could carry a secret, so a
+  log line cannot leak one by accident. A config error names the field and the problem, and prints a
+  value only when that value is what it is complaining about, which can be a duration or a mode name
+  and never a key, because nothing can find a key wrong except that it is empty.
 - **Nothing sensitive is logged.** No key, no `Authorization` header, no prompt content,
   no response content. The logging package has no field that could carry a secret, so a
   log line cannot leak one by accident.
@@ -53,8 +61,8 @@ cannot aim a request at a key it was not given.
 - **A client cannot aim a request at a key it was not given.** `Authorization` is always the
   key configured for the target the gateway selected. When the gate is on, the caller key
   is compared in constant time before the request body is read, and then not used again.
-- **The gate cannot be half-on.** `auth.api_key_env` is off when it is empty, and a variable
-  that is named but not present in the environment is a startup failure.
+- **The gate cannot be half-on.** `auth.api_key` is off when it is empty, and there is no second
+  place a value can come from, so there is nothing for the file and the process to disagree about.
 - **Size limits are enforced before forwarding**, in both directions.
 - **A `Retry-After` from an upstream is clamped**, so a hostile or broken value cannot make
   a target unavailable for an unreasonable time.
@@ -70,15 +78,19 @@ measurement you take yourself. A claim that no gate can check is not written as 
 Checked by the gates (`make fmt vet test race build headers`, and `./scripts/e2e.sh`):
 
 - The gate compares the caller key in constant time, on the API endpoints only, before the
-  body is read; a named variable that is not in the environment stops the process, and every
-  missing name is reported at once.
+  body is read; an empty value means off, and a target with no key is a startup failure that names
+  the target, with every problem in the file reported at once.
 - A request that the gate rejects never reaches an upstream, which is checked by counting
   what the fake upstream received rather than by reading a log line.
 - Size limits are enforced before forwarding: exactly the limit is forwarded, one byte more is
   a 413 with `code: request_body_too_large` and no upstream call.
 - `Retry-After` is clamped, checked with one target at three different clamp settings.
-- No key, prompt or response body appears in a log line or a metric label. The logging
-  package has no field that could carry one, so a line cannot leak one by accident.
+- No key, prompt or response body appears in a log line, a metric label or an API response. The
+  logging package has no field that could carry one, so a line cannot leak one by accident. The check
+  uses a value that must never come back out (`PLAINROUTE_TEST_SECRET_DO_NOT_LEAK_918273645`), as a
+  key in a file the process is asked to reject, and asserts the needle is absent from the error text,
+  from the log lines and from the metrics page: `internal/config/leak_test.go`, the log test in
+  `internal/proxy/proxy_test.go`, and the startup case in `scripts/e2e.sh`.
 - A provider error is forwarded with the upstream's status and the upstream's bytes, which is
   what a client that branches on the status depends on.
 

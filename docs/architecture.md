@@ -43,7 +43,7 @@ the walk is bounded by `fallbacks.max_hops`.
 
 | Package | What it owns | What it must not do |
 | --- | --- | --- |
-| `internal/config` | Load YAML strictly (unknown keys are errors), resolve keys from the environment, including the optional caller key, validate everything at once, apply defaults | Put a key in the config structure that came from the file |
+| `internal/config` | Load YAML strictly (unknown keys are errors), read the keys as values in the file, including the optional caller key, validate everything at once, apply defaults | Print a value it read from the file, which is a secret |
 | `internal/routing` | Pools, selection, per-target state (active count, cooldown), state that survives a reload | Try another target inside one request |
 | `internal/proxy` | The request path: the optional api key gate, body read, model splice, headers, the single attempt, streaming copy, error shape | Hold a model response in memory, re-form an SSE frame |
 | `internal/logging` | Structured logging with a fixed field set | Carry a key, a prompt, or response content |

@@ -10,9 +10,9 @@ copies the response bytes back, and reports what happened. It does not rewrite t
 response, does not retry on its own, and does not grow features that touch the
 streaming path.
 
-A target is one upstream entry: a model name, a base URL, one key read from the
-environment, and its own endpoint path, headers and concurrency limit. Two targets
-differ by any of them: "same model, different key" is one case, not the definition.
+A target is one upstream entry: a model name, a base URL, one key written as a value in the config
+file, and its own endpoint path, headers and concurrency limit. Two targets differ by any of them:
+"same model, different key" is one case, not the definition.
 
 The targets behind one route name are balanced against each other. Different route
 names are not balanced against each other, and one route reaches another only
@@ -99,20 +99,22 @@ routes:
       - name: account-1
         model: provider/model-one
         base_url: http://127.0.0.1:8091/stream
-        api_key_env: DEMO_KEY_1
+        api_key: a1
       - name: account-2
         model: provider/model-two
         base_url: http://127.0.0.1:8091/stream
-        api_key_env: DEMO_KEY_2
+        api_key: a2
 ```
 
 Run it against the fake upstream, which answers with fixed frames on fixed paths. The value of
-`DEMO_KEY_1` is what selects the behaviour, because a key is what identifies a target:
+`api_key` is what selects the behaviour, because a key is what identifies a target. What is written
+here is what runs: there is no second place a value can come from, so the file a reader reads is the
+file the gateway is on.
 
 ```bash
 # from the repository root
 go run ./cmd/fakeupstream &                          # 127.0.0.1:8091, stats at /stats
-DEMO_KEY_1=a1 DEMO_KEY_2=a2 go run ./cmd/plainroute -config demo.yaml
+go run ./cmd/plainroute -config demo.yaml
 ```
 
 Send one request:
@@ -175,30 +177,28 @@ of the pool, the gateway answers from its own state instead of knocking, 429 wit
 ```bash
 go build -o bin/plainroute ./cmd/plainroute
 cp config.example.yaml config.yaml
-export EXAMPLE_API_KEY_1=...
-export EXAMPLE_API_KEY_2=...
-export LOCAL_KEY=...        # the example config has a second route named local
+# Fill in the placeholders, then protect the file: it is the secret now.
+chmod 600 config.yaml
 ./bin/plainroute -config config.yaml
 ```
 
-Every name the config uses has to be set, because `api_key_env` names an environment
-variable. A config that references an unset one is a startup failure, not a request that
-fails later, and the error names every missing variable at once.
+The api keys are values in the config file, so the file a gateway runs on is a secret: 600
+permissions, the directory 700, gitignored, and never in an image layer. The example config in the
+repository has placeholders only, and `scripts/generate-config.py` writes placeholders only, so the
+only way a real key gets into a file is a person typing it in.
 
-Keys are read from the environment. Nothing that looks like a secret belongs in a config
-file, and the gateway never writes a key into a log line. A key is resolved when the config
-is read and held in memory after that. `api_key_env` is the name of a variable, never the
-value, so a key written into a YAML field is not a shape this project accepts: a key in a
-file is a key in git, in an image layer, and in a PR diff. A process sees the environment it
-was started with, so a `SIGHUP` reload re-reads the same values, and changing a key means
-starting a new process. In a container the environment is fixed when the container is
-created, so a changed `.env` file needs a new container.
+A target with no `api_key` is a startup failure that names the target, and the error reports every
+problem in the file at once instead of one per run. Startup stays strict because before the first
+config there is no last-known-good one to serve with.
 
-The config can reference the environment anywhere with `${NAME}` or `${NAME:-default}`, and
-an unset reference without a default stops the process. For a key that does not help:
-`api_key_env` is looked up as a name, so `${MISSING_KEY:-sk-example}` is read as a variable
-called `sk-example`, which is not set, and the config is rejected. A key value can only come
-from the environment.
+The old form named an environment variable, and this change removed it along with environment
+substitution anywhere in the file. The reason is the property this project is built on: a value that
+can come from two places is a value a reader cannot tell which one is in force. A file that reads one
+way and behaves another way is the bug, and a name that another program exported is the case that
+makes it happen — `API_KEY` can be exported by anything in the same shell, and the gate then compares
+a value nobody chose for it. Writing the value down is the whole fix. Nothing this project prints
+shows a value read from the file: the gateway never writes a key into a log line, a metric label or an
+API response, and a config error names the field and the problem without printing what it holds.
 
 Check that it is running:
 
@@ -233,12 +233,12 @@ routes:
       - name: account-1
         model: provider/model-one
         base_url: https://api.example.com/v1
-        api_key_env: EXAMPLE_API_KEY_1
+        api_key: replace-me-1
         max_active: 4
       - name: account-2
         model: provider/model-one
         base_url: https://api.example.com/v1
-        api_key_env: EXAMPLE_API_KEY_2
+        api_key: replace-me-2
         max_active: 4
 ```
 
@@ -259,11 +259,11 @@ routes:
       - name: provider-a
         model: provider-a/big-model
         base_url: https://api.example.com/v1
-        api_key_env: EXAMPLE_API_KEY_1
+        api_key: replace-me-1
       - name: provider-b
         model: provider-b/huge-model
         base_url: https://api.other.example/v1
-        api_key_env: EXAMPLE_API_KEY_2
+        api_key: replace-me-2
 ```
 
 Which model answers is the model of the target that was picked, and `/v1/models` reports the
@@ -313,11 +313,11 @@ routes:
       - name: work
         model: gpt-4o-mini
         base_url: https://api.openai.com/v1
-        api_key_env: OPENAI_WORK_KEY
+        api_key: replace-me-work
       - name: personal
         model: gpt-4o-mini
         base_url: https://api.openai.com/v1
-        api_key_env: OPENAI_PERSONAL_KEY
+        api_key: replace-me-personal
 
 retry:
   enabled: false
@@ -339,29 +339,26 @@ routes:
       - name: ollama
         model: qwen3:8b
         base_url: http://127.0.0.1:11434/v1
-        api_key_env: LOCAL_KEY    # any value; the key is still what identifies the target
+        api_key: replace-me       # any value; the key is still what identifies the target
 ```
 
 ## Api key gate (optional)
 
-Off by default, and it is one key rather than a table of keys. `auth.api_key_env` names one
-environment variable; when it resolves to a value, the api key a caller presents is compared
-with it in constant time, so a wrong key does not reveal how many bytes matched.
+Off by default, and it is one key rather than a table of keys. `auth.api_key` is the value; when it
+is not empty, the api key a caller presents is compared with it in constant time, so a wrong key does
+not reveal how many bytes matched.
 
 ```yaml
 auth:
-  api_key_env: PLAINROUTE_API_KEY
+  api_key: replace-me
 ```
 
-- Nothing configured means no gate, which is the documented default. A variable named in the
-  config but not present in the environment is a startup failure, not a quietly open gate,
-  because a half-configured gate reads as a working one.
-- Give the variable a name this project owns: `PLAINROUTE_API_KEY`, not `API_KEY`. A generic name
-  can be exported by another program in the same shell, or set by a shared `.env`, and then the
-  process starts and compares a value nobody chose for it. A name collision is not a startup
-  failure, so this is the one gate failure mode the config check cannot catch — the prefix is what
-  tells this project's secret from another program's. The startup line prints the gate state and
-  the name it read, never the value, so a collision is at least visible in the log.
+- Nothing configured means no gate, which is the documented default, and an empty value means the
+  same thing. There is no half state left: the value written in the file is the value in force, so a
+  gate that reads as on in the file is on. Under the old form a gate could read as on in the file and
+  be off in the process, because the name it pointed at was not set.
+- The startup line prints the gate state — `on` or `off` — and never the value, because printing the
+  value would print a secret into a log line.
 - The key is read the ordinary way: `Authorization: Bearer <key>`, which is what any
   OpenAI-compatible client already sends. No separate header, no second naming scheme.
 - The caller key and the target key are different things. The caller key decides who may
@@ -656,17 +653,20 @@ response body, so a log line cannot leak one by accident.
 ```bash
 docker build -t plainroute .
 docker run --rm -p 127.0.0.1:8080:8080 \
-  --env-file .env \
-  -v $PWD/config.yaml:/etc/plainroute/config.yaml:ro \
+  -v $PWD/plainroute-config:/etc/plainroute:ro \
   plainroute
 ```
 
-Pass the variables by the names the config uses. `api_key_env` names an environment
-variable, and the gateway looks that name up in the environment, so every name the
-config uses has to be set — in the example config that is `EXAMPLE_API_KEY_1`,
-`EXAMPLE_API_KEY_2` and `LOCAL_KEY`. A container missing one of them does not start,
-and the error names every missing variable at once, so a missing key is a startup
-failure rather than a request that fails later.
+The config file is the secret, so it is mounted read-only from the host and nothing is passed
+by name any more. Mount it as a directory, not as a single file: a single-file bind mount pins the
+inode the container started with, and when an editor replaces the file the container keeps reading the
+old inode, so a live reload sees nothing. A directory mount is looked up on each read, so the process
+sees the file the operator actually wrote. This is a fact about bind mounts, not something this
+repository can check: there is no docker daemon in CI, so the claim is stated here and confirmed on
+the machine that runs the gateway. On the host the file needs 600 permissions and the directory 700.
+
+A container started with a config it cannot read or cannot validate does not start: a missing file,
+an unreadable file or an invalid one is a startup failure, and the error names every problem at once.
 
 The image runs as a named non-root user and has no write access anywhere. The health
 check is the live endpoint. Readiness is not checked inside the image, because a target
@@ -674,7 +674,8 @@ that is cooling down is still a healthy container.
 
 The compose file is the shape this project runs in production: loopback-only mapping,
 read-only root filesystem, all capabilities dropped, `no-new-privileges`, a pid and
-memory limit, a 30 second stop grace, and keys from a `.env` file with 600 permissions.
+memory limit, a 30 second stop grace, and the config file mounted read-only from a directory the
+host keeps at 700 with the file at 600.
 
 CI builds the image but has no docker daemon, so it cannot start a container and cannot
 read one. The size and the settings above are checked by hand on a machine that can:
@@ -701,8 +702,10 @@ names the version, the commit, the immutable digest and the two verify commands.
 
 ## Security
 
-- Keys come from environment variables and are never written into a config file, a log
-  line, or an image layer.
+- The config file is the secret: it holds the keys as values, it is gitignored, and it needs 600
+  permissions on the host and a read-only directory mount in a container. A key is never written into
+  a log line, a metric label, an API response, or an image layer, and the generator writes
+  placeholders rather than keys.
 - The gateway never logs a key, the `Authorization` header, prompt content, or response
   content.
 - Upstream URLs come only from configuration; the gateway does not follow redirects, so a
@@ -713,11 +716,10 @@ names the version, the commit, the immutable digest and the two verify commands.
 - The metrics page reports counts, gauges and histograms. It contains no key names and no
   prompt content. If the page must not be public, put it behind your own restriction or set
   `metrics.enabled: false`.
-- Authentication is optional and off by default. When `auth.api_key_env` resolves to a value,
-  the api key a caller presents is compared in constant time, on the API endpoints only. With
-  nothing configured there is no gate, and then any process that can reach the listening port
-  can use the configured targets — which is why the compose file maps the port on
-  loopback only.
+- Authentication is optional and off by default. When `auth.api_key` holds a value, the api key a
+  caller presents is compared in constant time, on the API endpoints only. With nothing configured
+  there is no gate, and then any process that can reach the listening port can use the configured
+  targets — which is why the compose file maps the port on loopback only.
 - The caller api key is never forwarded upstream, never logged, and never appears in a metric
   label. The key the provider sees is always the target key.
 - There is no authorisation, no accounts and no multi-tenancy. One optional key decides who
@@ -777,19 +779,17 @@ line for `kind` (`transport`, `timeout`, `stream_idle`, `client_gone`).
 **The gateway returns 500.** That should not happen for a request the upstream answered. If
 it does, it is a bug in this project, and it should be reported with the request id.
 
-**Keys are missing at startup.** The config reports every problem at once, naming the
-environment variable. A config that references an unset variable is a startup failure, not
-a runtime surprise. The same is true for the gate: an `auth.api_key_env` that names an unset
-variable stops the process rather than leaving a gate that looks on but checks nothing.
+**A target has no key at startup.** The config reports every problem at once, and names the target
+it was reading, because a file with a hundred targets is only actionable when the error says which
+one. A target with no key is a startup failure rather than a request that fails later.
 
-**Every request gets 401 with `invalid_api_key`.** The gate is on, because
-`auth.api_key_env` resolved to a value. The client has to present that key as
-`Authorization: Bearer <key>`, the ordinary form. A gateway that is running either has no
-gate or a working one, so this is a client-side mismatch, not a half-configured gate. The
-key a caller presents is not the key the provider sees, so if the provider works when you
-send the caller key directly, you are reading the wrong variable. If a key that is not yours is
-accepted instead, the name is the problem: a generic name such as `API_KEY` reads whatever
-another program exported, so the gate is holding that program's value.
+**Every request gets 401 with `invalid_api_key`.** The gate is on, because `auth.api_key` is not
+empty. The client has to present that key as `Authorization: Bearer <key>`, the ordinary form. A
+gateway that is running either has no gate or a working one, so this is a client-side mismatch: the
+client is sending something else, or the value in the file is not the value you think it is. The file
+a reader reads is the file that runs, which is what makes this checkable from the file alone. The key
+a caller presents is not the key the provider sees, so if the provider works when you send the caller
+key directly, you are testing the wrong value.
 
 **Reload did nothing.** A failed `SIGHUP` reload keeps the running config instead of
 breaking a working gateway. The failure is logged and counted in
@@ -829,8 +829,10 @@ green run means something.
 
 `scripts/generate-config.py` writes a config for one OpenAI-compatible upstream: the
 model list comes from the live endpoint and falls back to a snapshot file when that
-endpoint gives nothing. Keys are never written into the file, only the names of the
-environment variables that hold them.
+endpoint gives nothing. Each key slot is written as `REPLACE_ME_ACCOUNT_n`, and the script
+has no argument that takes a key, so it cannot read, accept or print one: a real key gets
+into the file only when a person types it in, and that file is then a secret that needs 600
+permissions.
 
 The numbers it writes are the recommendation for a coding-agent workload, not the
 library defaults, and they are parameters because the right number depends on the
