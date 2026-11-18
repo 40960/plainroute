@@ -10,7 +10,7 @@ import (
 	"github.com/40960/plainroute/internal/config"
 )
 
-// Registry maps the model name a client sends to a pool of deployments.
+// Registry maps the model name a client sends to a pool of targets.
 //
 // Lookup accepts the configured alias and the real upstream model name, so a
 // client can use either. Aliases are checked first; if two models share the same
@@ -25,8 +25,8 @@ type Registry struct {
 	store    *StateStore
 }
 
-// New builds a registry from a validated config. Deployment state comes from the
-// store, so rebuilding after a reload does not clear a cooldown for a deployment
+// New builds a registry from a validated config. Target state comes from the
+// store, so rebuilding after a reload does not clear a cooldown for a target
 // that is still configured.
 func New(cfg *config.Config, store *StateStore, now func() time.Time) *Registry {
 	if store == nil {
@@ -53,13 +53,13 @@ func New(cfg *config.Config, store *StateStore, now func() time.Time) *Registry 
 			strategy:      r.strategy,
 			now:           r.now,
 		}
-		for i := range model.Deployments {
-			d := &model.Deployments[i]
+		for i := range model.Targets {
+			d := &model.Targets[i]
 			endpoint := d.Path
 			if endpoint == "" {
 				endpoint = config.DefaultEndpoint
 			}
-			pool.Deployments = append(pool.Deployments, &Deployment{
+			pool.Targets = append(pool.Targets, &Target{
 				Name:          d.Name,
 				Model:         alias,
 				UpstreamModel: model.UpstreamModel,

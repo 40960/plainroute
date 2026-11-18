@@ -23,18 +23,18 @@ handleChat
   1. readBody      size limit checked before anything is forwarded
   2. peekBody      read model and stream from the document, nothing else
   3. Registry.Lookup(model)                     → pool
-  4. pool.Pick()                               → one deployment, or nothing
+  4. pool.Pick()                               → one target, or nothing
   5. attempt()                                 → exactly one upstream request
   6. copy the response bytes, flush per read chunk
   7. report what happened to metrics and the log
 ```
 
 Step 4 is the only decision the gateway makes. If nothing is selectable, the request ends
-with a 429 answered from routing state, and no upstream is contacted. If a deployment is
+with a 429 answered from routing state, and no upstream is contacted. If a target is
 selectable, exactly one request goes to it.
 
 `attempt` is the function that keeps the invariant true, so it is worth reading in full.
-It has no loop over deployments and no second call to itself. The only way a client request
+It has no loop over targets and no second call to itself. The only way a client request
 can produce two upstream attempts is when model fallback is explicitly configured, and then
 the walk is bounded by `fallbacks.max_hops`.
 
@@ -43,7 +43,7 @@ the walk is bounded by `fallbacks.max_hops`.
 | Package | What it owns | What it must not do |
 | --- | --- | --- |
 | `internal/config` | Load YAML strictly (unknown keys are errors), resolve keys from the environment, including the optional caller key, validate everything at once, apply defaults | Put a key in the config structure that came from the file |
-| `internal/routing` | Pools, selection, per-deployment state (active count, cooldown), state that survives a reload | Try another deployment inside one request |
+| `internal/routing` | Pools, selection, per-target state (active count, cooldown), state that survives a reload | Try another target inside one request |
 | `internal/proxy` | The request path: the optional api key gate, body read, model splice, headers, the single attempt, streaming copy, error shape | Hold a model response in memory, re-form an SSE frame |
 | `internal/logging` | Structured logging with a fixed field set | Carry a key, a prompt, or response content |
 | `internal/metrics` | Prometheus collectors, including the process itself | Report anything that is not a count, gauge, or histogram |
@@ -59,10 +59,10 @@ behaviour change, not a refactor.
 1. **One client request produces at most one upstream attempt** (default config). Verified
    by 50 requests against an upstream that always returns 429, and by `cmd/bench` comparing
    `requests_total` with `upstream_attempts_total` under load.
-2. **A deployment that is cooling down is never selected.** A cooldown is recorded when a
+2. **A target that is cooling down is never selected.** A cooldown is recorded when a
    status code matches `routing.cooldown.status`, when a `Retry-After` arrives, or after a
    connection or idle failure when `routing.cooldown.timeout` is non-zero.
-3. **When every deployment for a model is cooling, no upstream call happens.** The answer
+3. **When every target for a model is cooling, no upstream call happens.** The answer
    comes from the gateway's own state with `code: all_deployments_cooling_down`.
 4. **The bytes the upstream sent are the bytes the client receives**, apart from the model
    value in the request body. Verified byte for byte, including the opening role delta,
@@ -104,7 +104,7 @@ decompresses cannot promise the bytes it copies are the bytes the upstream sent.
 **Redirects are not followed.** Upstream URLs come from configuration only, so an error body
 cannot point the proxy at a host that was not configured while carrying the request body.
 
-**`Authorization` is always the configured deployment key.** A client cannot aim a request at
+**`Authorization` is always the configured target key.** A client cannot aim a request at
 a key it was not given. Hop-by-hop headers are dropped in both directions, and
 `Content-Length` is dropped because the body the gateway sends may differ from the one the
 client counted.
@@ -112,7 +112,7 @@ client counted.
 **The caller api key is one optional comparison before the request path, not a caller table.**
 It is checked on the API endpoints only, before any byte of the request body is read, so it is
 not part of the streaming path and cannot change what reaches the client. The caller key and
-the deployment key are different things, and the tests keep them apart: a caller key that is
+the target key are different things, and the tests keep them apart: a caller key that is
 accepted is never the key the upstream sees. A rejected request is counted as one the gateway
 answered from its own state, with `model="none"`. A gate that is named in the config but whose
 variable is not set stops the process at load, because a half-configured gate reads as a
@@ -121,22 +121,22 @@ monitoring system that cannot authenticate is the ordinary case. A gate that can
 but is off by default does not change the invariants; a table of keys, per-caller quotas, or
 accounts would.
 
-**`Retry-After` is clamped.** A hostile or broken upstream value cannot make a deployment
+**`Retry-After` is clamped.** A hostile or broken upstream value cannot make a target
 unavailable for an unreasonable time, and the value the gateway forwards is the window it
 actually applied, not whatever the upstream printed.
 
-**Cooldown state survives a reload.** Deployment state is keyed by model and deployment name
+**Cooldown state survives a reload.** Target state is keyed by model and target name
 in a `StateStore`, so rebuilding the registry after a `SIGHUP` does not clear a cooldown for a
-deployment that is still configured. A failed reload keeps the running config, because a bad
+target that is still configured. A failed reload keeps the running config, because a bad
 edit should not break a working gateway.
 
-**Readiness is not affected by an upstream cooldown.** A deployment that is cooling down is
+**Readiness is not affected by an upstream cooldown.** A target that is cooling down is
 still a healthy process. Readiness goes false only while draining, which is what a load
 balancer should act on.
 
 **Selection is deterministic.** `least_active` with stable sort, ties keep config order, so a
-test can assert which deployment was chosen. `round_robin` rotates the candidate list while
-cooling deployments keep their position out of the rotation until they recover.
+test can assert which target was chosen. `round_robin` rotates the candidate list while
+cooling targets keep their position out of the rotation until they recover.
 
 **`TryAcquire` checks and increments under one lock**, so two goroutines cannot both believe
 they own the same slot. Every path that acquires must release: normal completion, an upstream

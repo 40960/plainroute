@@ -57,7 +57,7 @@ func newHarness(t *testing.T, cfgText string, env config.Env) *harness {
 	fakeServer := httptest.NewServer(fake)
 	t.Cleanup(fakeServer.Close)
 
-	// Point the configured deployments at the fake upstream. The placeholder in the
+	// Point the configured targets at the fake upstream. The placeholder in the
 	// test config is only a stand-in for the httptest URL.
 	cfgText = strings.ReplaceAll(cfgText, "https://fake.invalid/v1", fakeServer.URL+"/v1")
 
@@ -106,12 +106,12 @@ func chatBody(model string) string {
 	return fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"prompt-content"}]}`, model)
 }
 
-func (h *harness) requests(model, deployment, class string) float64 {
-	return testutil.ToFloat64(h.metrics.RequestsTotal.WithLabelValues(model, deployment, class))
+func (h *harness) requests(model, target, class string) float64 {
+	return testutil.ToFloat64(h.metrics.RequestsTotal.WithLabelValues(model, target, class))
 }
 
-func (h *harness) attemptsMetric(model, deployment, class string) float64 {
-	return testutil.ToFloat64(h.metrics.UpstreamAttempts.WithLabelValues(model, deployment, class))
+func (h *harness) attemptsMetric(model, target, class string) float64 {
+	return testutil.ToFloat64(h.metrics.UpstreamAttempts.WithLabelValues(model, target, class))
 }
 
 // TestStreamIsByteForByte is the streaming integrity test: the bytes the upstream
@@ -121,7 +121,7 @@ func TestStreamIsByteForByte(t *testing.T) {
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -157,7 +157,7 @@ func TestToolCallStreamPassesThroughUnchanged(t *testing.T) {
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -185,14 +185,14 @@ models:
 }
 
 // Test429CooldownAndNoInternalRetry is the behaviour the project exists for: the
-// deployment that returned 429 is cooled down, this request ends with the upstream
-// error, and only the next independent request uses another deployment.
+// target that returned 429 is cooled down, this request ends with the upstream
+// error, and only the next independent request uses another target.
 func Test429CooldownAndNoInternalRetry(t *testing.T) {
 	h := newHarness(t, `
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: account-1
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -215,7 +215,7 @@ models:
 		t.Fatalf("attempts: got %d, want 1: the gateway retried inside one request", h.fake.TotalAttempts())
 	}
 	if h.fake.Attempts("key-b") != 0 {
-		t.Error("the gateway retried to deployment B inside the same request")
+		t.Error("the gateway retried to target B inside the same request")
 	}
 
 	resp, _ = h.post(chatBody("demo"))
@@ -223,16 +223,16 @@ models:
 		t.Fatalf("second request: got %d, want 200", resp.StatusCode)
 	}
 	if h.fake.Attempts("key-a") != 1 {
-		t.Errorf("deployment A was used while cooling down: %d attempts", h.fake.Attempts("key-a"))
+		t.Errorf("target A was used while cooling down: %d attempts", h.fake.Attempts("key-a"))
 	}
 	if h.fake.Attempts("key-b") != 1 {
-		t.Errorf("deployment B attempts: got %d, want 1", h.fake.Attempts("key-b"))
+		t.Errorf("target B attempts: got %d, want 1", h.fake.Attempts("key-b"))
 	}
 
 	h.clock.Advance(10 * time.Second)
 	resp, _ = h.post(chatBody("demo"))
 	if h.fake.Attempts("key-a") != 2 {
-		t.Errorf("deployment A should be selectable again after recovery: %d", h.fake.Attempts("key-a"))
+		t.Errorf("target A should be selectable again after recovery: %d", h.fake.Attempts("key-a"))
 	}
 	if resp.StatusCode != 429 && resp.StatusCode != 200 {
 		t.Fatalf("after recovery: unexpected status %d", resp.StatusCode)
@@ -247,7 +247,7 @@ func TestRetryAfterFromUpstreamWins(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -293,7 +293,7 @@ func TestInvalidRetryAfterFallsBackToConfiguredCooldown(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -314,13 +314,13 @@ routing:
 	h.clock.Advance(4 * time.Second)
 	h.post(chatBody("m"))
 	if h.fake.Attempts("key-a") != 1 {
-		t.Error("deployment was used before the configured cooldown ended")
+		t.Error("target was used before the configured cooldown ended")
 	}
 
 	h.clock.Advance(time.Second)
 	h.post(chatBody("m"))
 	if h.fake.Attempts("key-a") != 2 {
-		t.Error("deployment should be usable after the configured cooldown")
+		t.Error("target should be usable after the configured cooldown")
 	}
 }
 
@@ -329,7 +329,7 @@ func TestHugeRetryAfterIsCapped(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -349,14 +349,14 @@ routing:
 }
 
 // TestAllCoolingDoesNotTouchUpstream: a fully cooled model is answered from the
-// gateway's own state, and Retry-After comes from the deployment that recovers
+// gateway's own state, and Retry-After comes from the target that recovers
 // first.
 func TestAllCoolingDoesNotTouchUpstream(t *testing.T) {
 	h := newHarness(t, `
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -388,7 +388,7 @@ models:
 		t.Fatalf("all cooling: got %d", resp.StatusCode)
 	}
 	if h.fake.TotalAttempts() != before {
-		t.Error("the gateway contacted an upstream while every deployment was cooling")
+		t.Error("the gateway contacted an upstream while every target was cooling")
 	}
 	if got := resp.Header.Get("Retry-After"); got != "10" {
 		t.Errorf("Retry-After: got %q, want 10", got)
@@ -407,16 +407,16 @@ models:
 	if envelope.Error.Code != "all_deployments_cooling_down" || envelope.Error.Type != "rate_limit_error" {
 		t.Errorf("error shape: %+v", envelope.Error)
 	}
-	if envelope.Error.Message != "No healthy deployments are currently available" {
+	if envelope.Error.Message != "No healthy targets are currently available" {
 		t.Errorf("message: got %q", envelope.Error.Message)
 	}
 
-	// The deployment that cools down last is still cooling; the one that recovers
+	// The target that cools down last is still cooling; the one that recovers
 	// first decides Retry-After once time moves.
 	h.clock.Advance(4 * time.Second)
 	resp, _ = h.post(chatBody("demo"))
 	if h.fake.TotalAttempts() != before {
-		t.Error("the gateway contacted an upstream while every deployment was cooling")
+		t.Error("the gateway contacted an upstream while every target was cooling")
 	}
 	if got := resp.Header.Get("Retry-After"); got != "6" {
 		t.Errorf("Retry-After after time moved: got %q, want 6", got)
@@ -430,7 +430,7 @@ func TestNoRetryAmplification(t *testing.T) {
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -466,16 +466,16 @@ retry:
 	}
 
 	var reported float64
-	for _, deployment := range []string{"a", "b", "c", "d", metrics.NoDeployment} {
-		reported += h.requests("demo", deployment, "4xx")
+	for _, target := range []string{"a", "b", "c", "d", metrics.NoTarget} {
+		reported += h.requests("demo", target, "4xx")
 	}
 	if reported != 50 {
 		t.Errorf("requests_total: got %v, want 50", reported)
 	}
 
 	var upstream float64
-	for _, deployment := range []string{"a", "b", "c", "d"} {
-		upstream += h.attemptsMetric("demo", deployment, "4xx")
+	for _, target := range []string{"a", "b", "c", "d"} {
+		upstream += h.attemptsMetric("demo", target, "4xx")
 	}
 	if upstream > 50 {
 		t.Errorf("upstream_attempts_total: got %v, want at most 50", upstream)
@@ -491,7 +491,7 @@ func TestErrorStatusesAreForwardedWithoutRetry(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -520,7 +520,7 @@ func TestModelAliasAndRawBodyArePreserved(t *testing.T) {
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -562,7 +562,7 @@ func TestLogsDoNotContainKeysOrPrompts(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -593,7 +593,7 @@ func TestUnknownModelAndBadJSON(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -649,7 +649,7 @@ func TestFailedWriteIsRecordedAsClientGone(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -662,9 +662,9 @@ models:
 	}
 
 	h.handler.reject(w, req, http.StatusTooManyRequests, "all_deployments_cooling_down",
-		"rate_limit_error", "No healthy deployments are currently available", "m", "test-id")
+		"rate_limit_error", "No healthy targets are currently available", "m", "test-id")
 
-	if got := testutil.ToFloat64(h.metrics.ClientDisconnects.WithLabelValues("m", metrics.NoDeployment)); got != 1 {
+	if got := testutil.ToFloat64(h.metrics.ClientDisconnects.WithLabelValues("m", metrics.NoTarget)); got != 1 {
 		t.Errorf("client_disconnects_total: got %v, want 1", got)
 	}
 	if !strings.Contains(h.log.String(), "client_disconnect") {
@@ -677,7 +677,7 @@ func TestHealthAndReadinessSurviveCooldown(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -690,7 +690,7 @@ models:
 		t.Errorf("healthz: got %d", resp.StatusCode)
 	}
 	if resp, _ := h.get("/readyz"); resp.StatusCode != 200 {
-		t.Errorf("readyz must not fail because one deployment is cooling, got %d", resp.StatusCode)
+		t.Errorf("readyz must not fail because one target is cooling, got %d", resp.StatusCode)
 	}
 
 	h.handler.Drain()
@@ -707,7 +707,7 @@ func TestModelsListingUsesAliasesAndRealNames(t *testing.T) {
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A

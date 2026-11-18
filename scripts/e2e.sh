@@ -118,13 +118,13 @@ routing:
 models:
   stream:
     upstream_model: stream
-    deployments:
+    targets:
       - name: streamer
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_STREAM
   two:
     upstream_model: two
-    deployments:
+    targets:
       - name: account-a
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_429
@@ -133,7 +133,7 @@ models:
         api_key_env: E2E_STREAM
   allcooling:
     upstream_model: allcooling
-    deployments:
+    targets:
       - name: c1
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_429
@@ -148,13 +148,13 @@ models:
         api_key_env: E2E_429
   toolcall:
     upstream_model: toolcall
-    deployments:
+    targets:
       - name: tool
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_TOOL
   cancel:
     upstream_model: cancel
-    deployments:
+    targets:
       - name: cancellable
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_CANCEL
@@ -168,7 +168,7 @@ FAKE_PID=$!
 GATEWAY_PID=$!
 sleep 1
 
-printf '\n1. one deployment streaming normally\n'
+printf '\n1. one target streaming normally\n'
 status=$(post stream "$WORK/stream.txt")
 check "status" "200" "$status"
 cat > "$WORK/expected.txt" <<'TXT'
@@ -186,7 +186,7 @@ else
 fi
 has "the gateway logged the request as a stream" '"stream":true' "$(cat "$WORK/gateway.log")"
 
-printf '\n2. deployment A returns 429, A cools down, no retry inside that request, the next request uses B\n'
+printf '\n2. target A returns 429, A cools down, no retry inside that request, the next request uses B\n'
 status=$(post two "$WORK/a.txt")
 check "first request status" "429" "$status"
 has "the upstream error body is forwarded as it arrived" "rate limited" "$(cat "$WORK/a.txt")"
@@ -199,7 +199,7 @@ check "A was not used again while it was cooling" "1" "$(count e2e-429)"
 has "the next request went to B" 'account-b' "$(cat "$WORK/gateway.log")"
 has "the cooldown was logged" '"cooldown"' "$(cat "$WORK/gateway.log")"
 
-printf '\n3. all deployments cooling: no upstream call, 429 with Retry-After\n'
+printf '\n3. all targets cooling: no upstream call, 429 with Retry-After\n'
 for _ in 1 2 3 4; do post allcooling "$WORK/warm.txt" > /dev/null; done
 stats
 before=$(total)
@@ -209,7 +209,7 @@ status=$(curl -s -D "$WORK/headers.txt" -o "$WORK/cooled.txt" -w '%{http_code}' 
   http://127.0.0.1:8080/v1/chat/completions)
 stats
 check "status" "429" "$status"
-check "no upstream call while every deployment is cooling" "$before" "$(total)"
+check "no upstream call while every target is cooling" "$before" "$(total)"
 has "Retry-After comes from the gateway's own state" 'Retry-After: 10' "$(cat "$WORK/headers.txt")"
 has "the OpenAI error shape with the routing code" 'all_deployments_cooling_down' "$(cat "$WORK/cooled.txt")"
 has "the gateway was ready throughout" 'ready' "$(curl -s http://127.0.0.1:8080/readyz)"
@@ -261,7 +261,7 @@ server:
 models:
   stream:
     upstream_model: stream
-    deployments:
+    targets:
       - name: gated
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_STREAM

@@ -13,7 +13,7 @@ func TestParseAppliesDefaults(t *testing.T) {
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: account-1
         base_url: https://api.example.com/v1
         api_key_env: EXAMPLE_API_KEY_1
@@ -56,7 +56,7 @@ models:
 		t.Errorf("log format: got %q, want json", cfg.Logging.Format)
 	}
 
-	if got := cfg.Models["demo"].Deployments[0].APIKey; got != "test-key" {
+	if got := cfg.Models["demo"].Targets[0].APIKey; got != "test-key" {
 		t.Errorf("api key: got %q, want test-key", got)
 	}
 }
@@ -71,7 +71,7 @@ func TestParseResolvesSecretsFromEnvironment(t *testing.T) {
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: account-one
         base_url: https://api.example.com/v1
         api_key_env: EXAMPLE_API_KEY_1
@@ -80,7 +80,7 @@ models:
         api_key_env: EXAMPLE_API_KEY_2
   local:
     upstream_model: llama-3.1-8b
-    deployments:
+    targets:
       - name: llama-cpp
         base_url: ${LOCAL_BASE_URL:-http://127.0.0.1:8081}/v1
         api_key_env: LOCAL_API_KEY
@@ -89,15 +89,15 @@ models:
 		t.Fatalf("parse: %v", err)
 	}
 
-	deployments := cfg.Models["demo"].Deployments
-	if len(deployments) != 2 {
-		t.Fatalf("deployments: got %d, want 2", len(deployments))
+	targets := cfg.Models["demo"].Targets
+	if len(targets) != 2 {
+		t.Fatalf("targets: got %d, want 2", len(targets))
 	}
-	if deployments[0].APIKey != "key-one" || deployments[1].APIKey != "key-two" {
-		t.Errorf("keys resolved incorrectly: %q %q", deployments[0].APIKey, deployments[1].APIKey)
+	if targets[0].APIKey != "key-one" || targets[1].APIKey != "key-two" {
+		t.Errorf("keys resolved incorrectly: %q %q", targets[0].APIKey, targets[1].APIKey)
 	}
 
-	local := cfg.Models["local"].Deployments[0]
+	local := cfg.Models["local"].Targets[0]
 	if local.BaseURL != "http://127.0.0.1:8081/v1" {
 		t.Errorf("env default: got %q, want http://127.0.0.1:8081/v1", local.BaseURL)
 	}
@@ -111,7 +111,7 @@ func TestParseRejectsMissingSecret(t *testing.T) {
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: account-one
         base_url: https://api.example.com/v1
         api_key_env: EXAMPLE_API_KEY_MISSING
@@ -141,7 +141,7 @@ logging:
   level: shout
 models:
   demo:
-    deployments:
+    targets:
       - name: ""
         base_url: ftp://example.invalid/v1
         api_key_env: MISSING_KEY
@@ -172,7 +172,7 @@ timeouts:
 models:
   m:
     upstream_model: m
-    deployments: [{name: a, base_url: http://127.0.0.1:8081, api_key_env: K}]
+    targets: [{name: a, base_url: http://127.0.0.1:8081, api_key_env: K}]
 `), Env{"K": "x"})
 	if err == nil {
 		t.Fatal("expected a duration error")
@@ -190,7 +190,7 @@ server:
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: http://127.0.0.1:8081
         api_key_env: K
@@ -214,11 +214,11 @@ models:
   a:
     upstream_model: a
     fallbacks: [b]
-    deployments: [{name: d1, base_url: http://127.0.0.1:8081, api_key_env: K}]
+    targets: [{name: d1, base_url: http://127.0.0.1:8081, api_key_env: K}]
   b:
     upstream_model: b
     fallbacks: [a]
-    deployments: [{name: d2, base_url: http://127.0.0.1:8081, api_key_env: K}]
+    targets: [{name: d2, base_url: http://127.0.0.1:8081, api_key_env: K}]
 `), env)
 	if err == nil {
 		t.Fatal("expected a cycle error")
@@ -234,7 +234,7 @@ models:
   a:
     upstream_model: a
     fallbacks: [nope]
-    deployments: [{name: d1, base_url: http://127.0.0.1:8081, api_key_env: K}]
+    targets: [{name: d1, base_url: http://127.0.0.1:8081, api_key_env: K}]
 `), env); err == nil {
 		t.Fatal("expected an error for an unknown fallback target")
 	}
@@ -247,7 +247,7 @@ models:
   a:
     upstream_model: a
     fallbacks: [a]
-    deployments: [{name: d1, base_url: http://127.0.0.1:8081, api_key_env: K}]
+    targets: [{name: d1, base_url: http://127.0.0.1:8081, api_key_env: K}]
 `), env); err == nil {
 		t.Fatal("expected a self-fallback error")
 	}
@@ -283,7 +283,7 @@ func TestMetricsPageIsOnByDefaultAndCanBeTurnedOff(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: http://127.0.0.1:8081
         api_key_env: K
@@ -306,7 +306,7 @@ metrics:
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: http://127.0.0.1:8081
         api_key_env: K
@@ -330,7 +330,7 @@ logging:
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: http://127.0.0.1:8081
         api_key_env: K

@@ -31,7 +31,7 @@ func errorBody(message, typ, code string) []byte {
 
 // parseRetryAfter turns an upstream Retry-After into a duration. It accepts
 // seconds and an HTTP date, and clamps the result so a hostile or broken value
-// cannot make a deployment unavailable for an unreasonable time.
+// cannot make a target unavailable for an unreasonable time.
 func parseRetryAfter(value string, def, max time.Duration) time.Duration {
 	if value == "" {
 		return def

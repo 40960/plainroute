@@ -18,18 +18,18 @@ the end-to-end script.
 
 - One upstream attempt per client request. No retry by default, and no internal retry inside
   a single request.
-- Per-deployment cooldown from a status map, with `Retry-After` from the upstream winning,
+- Per-target cooldown from a status map, with `Retry-After` from the upstream winning,
   clamped by `routing.cooldown.max`, and an unparseable value falling back to the configured
   duration.
-- A model with every deployment cooling is answered from the gateway's own state: 429,
-  `code: all_deployments_cooling_down`, `Retry-After` from the deployment that recovers
+- A model with every target cooling is answered from the gateway's own state: 429,
+  `code: all_deployments_cooling_down`, `Retry-After` from the target that recovers
   first, no upstream call.
 - Routing strategies `least_active` (default) and `round_robin`. Selection is deterministic:
-  ties keep config order. Measured on 12 sequential requests with four deployments:
+  ties keep config order. Measured on 12 sequential requests with four targets:
   round_robin 3/3/3/3, least_active 12/0/0/0 — sequential traffic never overlaps, so ties go
   to config order. The choice between them depends on whether the limit you care about is per
   key or per connection pool.
-- `max_active` per deployment.
+- `max_active` per target.
 - Model alias mapping by byte splice, so only the model value changes and the rest of the
   document, including unknown fields and field order, survives.
 - Streaming responses are copied chunk by chunk and flushed per chunk. Frames are not
@@ -37,7 +37,7 @@ the end-to-end script.
 - A stream idle watchdog aborts a silent stream. A client that goes away cancels the
   upstream request. An idle timeout and a client disconnect are recorded as different kinds.
 - The gateway does not follow redirects. Hop-by-hop headers are dropped both ways.
-  `Authorization` is always the configured deployment key.
+  `Authorization` is always the configured target key.
 - `timeouts.request` is 0 by default, so a long reasoning stream is not killed by an
   ordinary request timeout.
 - Optional api key gate, off by default. `auth.api_key_env` names one environment variable;
@@ -45,7 +45,7 @@ the end-to-end script.
   endpoints (`/v1/*`). Nothing configured means no gate, and a variable that is named but not
   set is a startup failure, so a gate cannot be half-on. Health, readiness and the metrics
   page stay open. The caller key is never forwarded upstream, never logged, and never appears
-  in a metric label: the key the provider sees is always the deployment key. A rejection is
+  in a metric label: the key the provider sees is always the target key. A rejection is
   401 with `code: invalid_api_key`, `type: authentication_error`, counted in
   `plainroute_gateway_rejected_total{model="none",code="invalid_api_key"}`, and it is one of
   the requests the gateway answered from its own state. The startup line reports the gate state and

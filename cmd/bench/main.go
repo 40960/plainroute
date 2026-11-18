@@ -198,7 +198,7 @@ func printGateway(page string) {
 		"plainroute_requests_total",
 		"plainroute_upstream_attempts_total",
 		"plainroute_active_requests",
-		"plainroute_deployment_in_cooldown",
+		"plainroute_target_in_cooldown",
 		"plainroute_client_disconnects_total",
 		"plainroute_stream_aborts_total",
 		"plainroute_gateway_rejected_total",

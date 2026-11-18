@@ -4,7 +4,7 @@
 //
 // PlainRoute is a single process with no database and no external service:
 // everything it needs is described in one file. Secrets are never written in
-// that file - a deployment names an environment variable and the value is read
+// that file - a target names an environment variable and the value is read
 // at startup, so the configuration itself can be committed to a repository.
 //
 // String values support environment substitution:
@@ -130,20 +130,20 @@ type RoutingConfig struct {
 }
 
 // CooldownConfig is deliberately small. A status code maps to a cooldown
-// duration; 0 means that status does not cool a deployment down. Retry-After
+// duration; 0 means that status does not cool a target down. Retry-After
 // from the upstream always wins, up to Max.
 type CooldownConfig struct {
 	Status map[int]Duration `yaml:"status"`
 	Max    Duration         `yaml:"max"`
 
-	// Timeout cools a deployment down after a connection, response-header or stream
+	// Timeout cools a target down after a connection, response-header or stream
 	// idle failure. 0 disables it. Authentication failures are handled through the
 	// status map, for example 401 or 403.
 	Timeout Duration `yaml:"timeout"`
 }
 
 // DefaultCooldown is the behaviour the project is built around: a 429 takes the
-// deployment that produced it out of the pool for ten seconds.
+// target that produced it out of the pool for ten seconds.
 func DefaultCooldown() map[int]Duration {
 	return map[int]Duration{429: Duration(10 * time.Second)}
 }
@@ -166,7 +166,7 @@ type FallbackConfig struct {
 
 // HeadersConfig controls which request headers reach the upstream. Hop-by-hop
 // headers are always removed. Mode "deny" (the default) forwards everything
-// except Deny; mode "allow" forwards only Allow plus the per-deployment headers.
+// except Deny; mode "allow" forwards only Allow plus the per-target headers.
 type HeadersConfig struct {
 	Mode             string            `yaml:"mode"`
 	Deny             []string          `yaml:"deny"`
@@ -194,12 +194,12 @@ type MetricsConfig struct {
 func (m MetricsConfig) On() bool { return m.Enabled == nil || *m.Enabled }
 
 type ModelConfig struct {
-	UpstreamModel string             `yaml:"upstream_model"`
-	Fallbacks     []string           `yaml:"fallbacks"`
-	Deployments   []DeploymentConfig `yaml:"deployments"`
+	UpstreamModel string         `yaml:"upstream_model"`
+	Fallbacks     []string       `yaml:"fallbacks"`
+	Targets       []TargetConfig `yaml:"targets"`
 }
 
-type DeploymentConfig struct {
+type TargetConfig struct {
 	Name      string            `yaml:"name"`
 	BaseURL   string            `yaml:"base_url"`
 	APIKeyEnv string            `yaml:"api_key_env"`
@@ -436,18 +436,18 @@ func validate(cfg *Config, env Env) error {
 		if model.UpstreamModel == "" {
 			problems = append(problems, fmt.Sprintf("model %q: upstream_model is required", alias))
 		}
-		if len(model.Deployments) == 0 {
-			problems = append(problems, fmt.Sprintf("model %q has no deployments", alias))
+		if len(model.Targets) == 0 {
+			problems = append(problems, fmt.Sprintf("model %q has no targets", alias))
 		}
 
 		seenName := map[string]bool{}
-		for i := range model.Deployments {
-			d := &model.Deployments[i]
-			where := fmt.Sprintf("model %q deployment %d", alias, i+1)
+		for i := range model.Targets {
+			d := &model.Targets[i]
+			where := fmt.Sprintf("model %q target %d", alias, i+1)
 			if d.Name == "" {
 				problems = append(problems, fmt.Sprintf("%s: name is required", where))
 			} else if seenName[d.Name] {
-				problems = append(problems, fmt.Sprintf("model %q has duplicate deployment name %q", alias, d.Name))
+				problems = append(problems, fmt.Sprintf("model %q has duplicate target name %q", alias, d.Name))
 			} else {
 				seenName[d.Name] = true
 			}

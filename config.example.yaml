@@ -36,7 +36,7 @@ routing:
       403: 60s
       503: 15s
     max: 5m          # clamps a Retry-After from the upstream
-    timeout: 0s      # cools a deployment after a connection or idle failure; 0 disables
+    timeout: 0s      # cools a target after a connection or idle failure; 0 disables
 
 # Off by default. The client owns backoff. When enabled, a retry only happens before any
 # byte of the upstream response has reached the client.
@@ -67,9 +67,9 @@ metrics:
 
 # Optional, and off when nothing is written here. One api key the caller presents, read from
 # the environment. No key configured means no gate: the gateway checks nothing, and any
-# process that can reach the listening port can use the deployments. When a key is set it is
+# process that can reach the listening port can use the targets. When a key is set it is
 # compared in constant time, and the key that goes upstream is still the one configured for
-# the selected deployment, so the caller key never reaches the provider.
+# the selected target, so the caller key never reaches the provider.
 #
 # The gate covers the API endpoints (/v1/*). Health, readiness and the metrics page stay
 # open, because a monitoring system that cannot authenticate is the ordinary case and those
@@ -90,7 +90,7 @@ models:
     # The name the client sends, mapped to the name the upstream expects. This is the only
     # field PlainRoute changes in a request body.
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: account-1
         base_url: https://api.example.com/v1
         api_key_env: EXAMPLE_API_KEY_1
@@ -102,7 +102,7 @@ models:
 
   local:
     upstream_model: qwen3:8b
-    deployments:
+    targets:
       - name: ollama
         base_url: http://127.0.0.1:11434/v1
         api_key_env: LOCAL_KEY

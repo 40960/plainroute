@@ -4,7 +4,7 @@
 // and by a local run when a gateway should not be pointed at a real provider.
 //
 // Behaviour comes from the API key the gateway presents, because a key is what
-// identifies a deployment, or from the path part of the deployment base URL, which is
+// identifies a target, or from the path part of the target base URL, which is
 // how the script checks one case at a time. GET /stats reports what the server saw, so
 // a script can check that client requests and upstream attempts are the same number.
 package main

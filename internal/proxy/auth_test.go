@@ -14,9 +14,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// The caller key decides who may use the gateway. It is not the deployment key, and these
+// The caller key decides who may use the gateway. It is not the target key, and these
 // tests keep the two apart: the key that reaches the upstream is always the one the operator
-// configured for the selected deployment.
+// configured for the selected target.
 
 const callerBody = `{"model":"m","messages":[{"role":"user","content":"prompt-content"}]}`
 
@@ -27,16 +27,16 @@ auth:
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: DEPLOYMENT_KEY
-`, config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "deployment-key"})
+`, config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})
 
 	// If the caller key were forwarded, the fake upstream would resolve the request by it
 	// and answer with its own marker. It must not.
 	h.fake.Set("caller-key", fakeupstream.Behavior{Status: 200, Body: `{"via":"caller-key"}`})
-	h.fake.Set("deployment-key", fakeupstream.Behavior{Status: 200, Body: `{"via":"deployment-key"}`})
+	h.fake.Set("target-key", fakeupstream.Behavior{Status: 200, Body: `{"via":"target-key"}`})
 
 	cases := []struct {
 		name    string
@@ -47,8 +47,8 @@ models:
 	}{
 		{"no key presented", "", http.StatusUnauthorized, `"code":"invalid_api_key"`, "no request was sent to the upstream"},
 		{"wrong key presented", "Bearer not-the-caller-key", http.StatusUnauthorized, `"type":"authentication_error"`, "the error shape is the OpenAI one"},
-		{"correct key, Bearer form", "Bearer caller-key", http.StatusOK, `"via":"deployment-key"`, "the caller key is not forwarded upstream"},
-		{"correct key, raw form", "caller-key", http.StatusOK, `"via":"deployment-key"`, "the raw form works the same way"},
+		{"correct key, Bearer form", "Bearer caller-key", http.StatusOK, `"via":"target-key"`, "the caller key is not forwarded upstream"},
+		{"correct key, raw form", "caller-key", http.StatusOK, `"via":"target-key"`, "the raw form works the same way"},
 	}
 
 	for _, c := range cases {
@@ -78,13 +78,13 @@ models:
 	if h.fake.Attempts("caller-key") != 0 {
 		t.Errorf("the caller key was used as an upstream key: %d attempts", h.fake.Attempts("caller-key"))
 	}
-	if h.fake.Attempts("deployment-key") != 2 {
-		t.Errorf("upstream attempts: got %d, want 2", h.fake.Attempts("deployment-key"))
+	if h.fake.Attempts("target-key") != 2 {
+		t.Errorf("upstream attempts: got %d, want 2", h.fake.Attempts("target-key"))
 	}
 	if got := testutil.ToFloat64(h.metrics.GatewayRejected.WithLabelValues(metrics.NoModel, "invalid_api_key")); got != 2 {
 		t.Errorf("gateway_rejected invalid_api_key: got %v, want 2", got)
 	}
-	if got := testutil.ToFloat64(h.metrics.RequestsTotal.WithLabelValues(metrics.NoModel, metrics.NoDeployment, "4xx")); got != 2 {
+	if got := testutil.ToFloat64(h.metrics.RequestsTotal.WithLabelValues(metrics.NoModel, metrics.NoTarget, "4xx")); got != 2 {
 		t.Errorf("requests_total for the rejected requests: got %v, want 2", got)
 	}
 
@@ -112,13 +112,13 @@ auth:
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: DEPLOYMENT_KEY
-`, config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "deployment-key"})
+`, config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})
 
-	h.fake.Set("deployment-key", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
+	h.fake.Set("target-key", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 
 	for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
 		_, body := h.get(path)
@@ -159,13 +159,13 @@ func TestGateIsOffWhenNothingIsConfigured(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: DEPLOYMENT_KEY
-`, config.Env{"DEPLOYMENT_KEY": "deployment-key"})
+`, config.Env{"DEPLOYMENT_KEY": "target-key"})
 
-	h.fake.Set("deployment-key", fakeupstream.Behavior{Status: 200, Body: `{"via":"deployment-key"}`})
+	h.fake.Set("target-key", fakeupstream.Behavior{Status: 200, Body: `{"via":"target-key"}`})
 
 	req, err := http.NewRequest(http.MethodPost, h.gateway.URL+"/v1/chat/completions", strings.NewReader(callerBody))
 	if err != nil {
@@ -183,8 +183,8 @@ models:
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status: got %d, want 200 with the gate off", resp.StatusCode)
 	}
-	if !strings.Contains(string(body), "deployment-key") {
-		t.Errorf("the deployment key was not used upstream: %s", body)
+	if !strings.Contains(string(body), "target-key") {
+		t.Errorf("the target key was not used upstream: %s", body)
 	}
 }
 
@@ -195,13 +195,13 @@ func TestGateAppliesAfterReload(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: DEPLOYMENT_KEY
-`, config.Env{"DEPLOYMENT_KEY": "deployment-key"})
+`, config.Env{"DEPLOYMENT_KEY": "target-key"})
 
-	h.fake.Set("deployment-key", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
+	h.fake.Set("target-key", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 
 	_, body := h.post(callerBody)
 	if !strings.Contains(body, "ok") {
@@ -214,11 +214,11 @@ auth:
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: DEPLOYMENT_KEY
-`), config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "deployment-key"})
+`), config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})
 	if err != nil {
 		t.Fatalf("reload config: %v", err)
 	}

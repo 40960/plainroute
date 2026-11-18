@@ -39,22 +39,22 @@ func (h *Handler) attempt(
 	r *http.Request,
 	cfg *config.Config,
 	pool *routing.Pool,
-	d *routing.Deployment,
+	t *routing.Target,
 	body []byte,
 	peek *peeked,
 	id string,
 	start time.Time,
 	allowFallback bool,
 ) outcome {
-	defer pool.Release(d)
+	defer pool.Release(t)
 
-	// Being selectable means this deployment is not cooling down, so clear its
+	// Being selectable means this target is not cooling down, so clear its
 	// cooldown gauge.
-	h.metrics.CooldownActive.WithLabelValues(pool.Model, d.Name).Set(0)
-	h.metrics.ActiveRequests.WithLabelValues(pool.Model, d.Name).Inc()
-	defer h.metrics.ActiveRequests.WithLabelValues(pool.Model, d.Name).Dec()
+	h.metrics.CooldownActive.WithLabelValues(pool.Model, t.Name).Set(0)
+	h.metrics.ActiveRequests.WithLabelValues(pool.Model, t.Name).Inc()
+	defer h.metrics.ActiveRequests.WithLabelValues(pool.Model, t.Name).Dec()
 
-	bodyToSend := peek.withModel(body, d.UpstreamModel)
+	bodyToSend := peek.withModel(body, t.UpstreamModel)
 
 	ctx := r.Context()
 	if cfg.Timeouts.Request > 0 {
@@ -79,11 +79,11 @@ func (h *Handler) attempt(
 	})
 	defer idleTimer.Stop()
 
-	req, err := http.NewRequestWithContext(idleCtx, http.MethodPost, d.URL(), bytes.NewReader(bodyToSend))
+	req, err := http.NewRequestWithContext(idleCtx, http.MethodPost, t.URL(), bytes.NewReader(bodyToSend))
 	if err != nil {
 		h.log.Error("build_upstream_request", "request_id", id, "model", pool.Model,
-			"deployment", d.Name, "error", err)
-		h.metrics.UpstreamErrors.WithLabelValues(pool.Model, d.Name, "build_request").Inc()
+			"target", t.Name, "error", err)
+		h.metrics.UpstreamErrors.WithLabelValues(pool.Model, t.Name, "build_request").Inc()
 		if allowFallback {
 			return outcome{kind: "transport", fallbackable: true}
 		}
@@ -91,34 +91,34 @@ func (h *Handler) attempt(
 			"could not build the upstream request", pool.Model, id)
 		return outcome{delivered: true, kind: "transport"}
 	}
-	copyRequestHeaders(req.Header, r.Header, cfg, d, id)
+	copyRequestHeaders(req.Header, r.Header, cfg, t, id)
 
 	sendStart := h.now()
 	res, err := h.client.Do(req)
 	if err != nil {
-		return h.reportTransportFailure(w, r, idleCtx, idleFired, cfg, pool, d, id, allowFallback, err)
+		return h.reportTransportFailure(w, r, idleCtx, idleFired, cfg, pool, t, id, allowFallback, err)
 	}
 	defer func() {
 		// A Close error after a clean read means the connection ended abnormally, which
 		// is worth recording rather than throwing away.
 		if cerr := res.Body.Close(); cerr != nil && !errors.Is(cerr, io.EOF) {
-			h.metrics.StreamAborts.WithLabelValues(pool.Model, d.Name, "close_error").Inc()
+			h.metrics.StreamAborts.WithLabelValues(pool.Model, t.Name, "close_error").Inc()
 			h.log.Warn("upstream_body_close_failed", "request_id", id, "model", pool.Model,
-				"deployment", d.Name, "error", cerr)
+				"target", t.Name, "error", cerr)
 		}
 	}()
 
 	stream := isEventStream(res.Header.Get("Content-Type"))
 
 	if res.StatusCode >= 400 {
-		h.metrics.UpstreamAttempts.WithLabelValues(pool.Model, d.Name, metrics.StatusClass(res.StatusCode)).Inc()
+		h.metrics.UpstreamAttempts.WithLabelValues(pool.Model, t.Name, metrics.StatusClass(res.StatusCode)).Inc()
 		def := cfg.Routing.Cooldown.Status[res.StatusCode].Std()
 		ra := parseRetryAfter(res.Header.Get("Retry-After"), def, cfg.Routing.Cooldown.Max.Std())
 		if ra > 0 {
-			h.applyCooldown(cfg, pool, d, ra, http.StatusText(res.StatusCode), id)
+			h.applyCooldown(cfg, pool, t, ra, http.StatusText(res.StatusCode), id)
 		}
 		h.log.Warn("upstream_error_status", "request_id", id, "model", pool.Model,
-			"deployment", d.Name, "status", res.StatusCode,
+			"target", t.Name, "status", res.StatusCode,
 			"ttft_ms", durationMs(h.now().Sub(sendStart)))
 
 		if allowFallback {
@@ -136,11 +136,11 @@ func (h *Handler) attempt(
 		}
 		w.WriteHeader(res.StatusCode)
 		written := h.copyBody(w, res.Body, cfg, stream)
-		h.metrics.Observe(pool.Model, d.Name, res.StatusCode, stream, h.now().Sub(start), h.now().Sub(sendStart), written)
+		h.metrics.Observe(pool.Model, t.Name, res.StatusCode, stream, h.now().Sub(start), h.now().Sub(sendStart), written)
 		return outcome{delivered: true, kind: "status"}
 	}
 
-	h.metrics.UpstreamAttempts.WithLabelValues(pool.Model, d.Name, metrics.StatusClass(res.StatusCode)).Inc()
+	h.metrics.UpstreamAttempts.WithLabelValues(pool.Model, t.Name, metrics.StatusClass(res.StatusCode)).Inc()
 
 	buf := make([]byte, 32*1024)
 
@@ -150,16 +150,16 @@ func (h *Handler) attempt(
 	n, err := readUpTo(res.Body, buf, cfg.Server.MaxResponseBytes)
 	if n == 0 && err != nil && !errors.Is(err, io.EOF) {
 		kind := classifyStreamError(r, idleCtx, idleFired, err)
-		h.metrics.UpstreamErrors.WithLabelValues(pool.Model, d.Name, kind).Inc()
+		h.metrics.UpstreamErrors.WithLabelValues(pool.Model, t.Name, kind).Inc()
 		if kind == "stream_idle" {
-			h.metrics.StreamAborts.WithLabelValues(pool.Model, d.Name, kind).Inc()
+			h.metrics.StreamAborts.WithLabelValues(pool.Model, t.Name, kind).Inc()
 		}
 		if kind == "client_gone" {
-			h.metrics.ClientDisconnects.WithLabelValues(pool.Model, d.Name).Inc()
+			h.metrics.ClientDisconnects.WithLabelValues(pool.Model, t.Name).Inc()
 			return outcome{delivered: true, kind: kind}
 		}
 		if dur := cfg.Routing.Cooldown.Timeout.Std(); dur > 0 {
-			h.applyCooldown(cfg, pool, d, dur, kind, id)
+			h.applyCooldown(cfg, pool, t, dur, kind, id)
 		}
 		if allowFallback {
 			return outcome{kind: kind, fallbackable: true}
@@ -178,9 +178,9 @@ func (h *Handler) attempt(
 	var written int64
 	if n > 0 {
 		if _, werr := w.Write(buf[:n]); werr != nil {
-			h.metrics.ClientDisconnects.WithLabelValues(pool.Model, d.Name).Inc()
+			h.metrics.ClientDisconnects.WithLabelValues(pool.Model, t.Name).Inc()
 			h.log.Warn("client_disconnect", "request_id", id, "model", pool.Model,
-				"deployment", d.Name, "bytes", written, "error", werr)
+				"target", t.Name, "bytes", written, "error", werr)
 			return outcome{delivered: true, kind: "client_gone"}
 		}
 		written += int64(n)
@@ -189,9 +189,9 @@ func (h *Handler) attempt(
 
 	for {
 		if written >= cfg.Server.MaxResponseBytes {
-			h.metrics.StreamAborts.WithLabelValues(pool.Model, d.Name, "response_limit").Inc()
+			h.metrics.StreamAborts.WithLabelValues(pool.Model, t.Name, "response_limit").Inc()
 			h.log.Warn("response_limit_reached", "request_id", id, "model", pool.Model,
-				"deployment", d.Name, "bytes", written)
+				"target", t.Name, "bytes", written)
 			return outcome{delivered: true, kind: "response_limit"}
 		}
 
@@ -199,16 +199,16 @@ func (h *Handler) attempt(
 
 		n, err := readUpTo(res.Body, buf, cfg.Server.MaxResponseBytes-written)
 		if errors.Is(err, errResponseLimit) {
-			h.metrics.StreamAborts.WithLabelValues(pool.Model, d.Name, "response_limit").Inc()
+			h.metrics.StreamAborts.WithLabelValues(pool.Model, t.Name, "response_limit").Inc()
 			h.log.Warn("response_limit_reached", "request_id", id, "model", pool.Model,
-				"deployment", d.Name, "bytes", written)
+				"target", t.Name, "bytes", written)
 			return outcome{delivered: true, kind: "response_limit"}
 		}
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				h.metrics.ClientDisconnects.WithLabelValues(pool.Model, d.Name).Inc()
+				h.metrics.ClientDisconnects.WithLabelValues(pool.Model, t.Name).Inc()
 				h.log.Warn("client_disconnect", "request_id", id, "model", pool.Model,
-					"deployment", d.Name, "bytes", written, "error", werr)
+					"target", t.Name, "bytes", written, "error", werr)
 				return outcome{delivered: true, kind: "client_gone"}
 			}
 			written += int64(n)
@@ -220,41 +220,41 @@ func (h *Handler) attempt(
 				break
 			}
 			kind := classifyStreamError(r, idleCtx, idleFired, err)
-			h.metrics.UpstreamErrors.WithLabelValues(pool.Model, d.Name, kind).Inc()
+			h.metrics.UpstreamErrors.WithLabelValues(pool.Model, t.Name, kind).Inc()
 			if kind == "stream_idle" {
-				h.metrics.StreamAborts.WithLabelValues(pool.Model, d.Name, kind).Inc()
+				h.metrics.StreamAborts.WithLabelValues(pool.Model, t.Name, kind).Inc()
 				if dur := cfg.Routing.Cooldown.Timeout.Std(); dur > 0 {
-					h.applyCooldown(cfg, pool, d, dur, kind, id)
+					h.applyCooldown(cfg, pool, t, dur, kind, id)
 				}
 			}
 			if kind == "client_gone" {
-				h.metrics.ClientDisconnects.WithLabelValues(pool.Model, d.Name).Inc()
+				h.metrics.ClientDisconnects.WithLabelValues(pool.Model, t.Name).Inc()
 			}
 			h.log.Warn("stream_ended_early", "request_id", id, "model", pool.Model,
-				"deployment", d.Name, "kind", kind, "bytes", written, "error", err)
+				"target", t.Name, "kind", kind, "bytes", written, "error", err)
 			return outcome{delivered: true, kind: kind}
 		}
 	}
 
 	duration := h.now().Sub(start)
-	h.metrics.Observe(pool.Model, d.Name, res.StatusCode, stream, duration, ttft, written)
+	h.metrics.Observe(pool.Model, t.Name, res.StatusCode, stream, duration, ttft, written)
 	h.log.Info("request_completed",
 		"request_id", id,
 		"model", pool.Model,
-		"upstream_model", d.UpstreamModel,
-		"deployment", d.Name,
+		"upstream_model", t.UpstreamModel,
+		"target", t.Name,
 		"status", res.StatusCode,
 		"stream", stream,
 		"ttft_ms", durationMs(ttft),
 		"duration_ms", durationMs(duration),
 		"bytes", written,
-		"active", d.Active(),
+		"active", t.Active(),
 	)
 	return outcome{delivered: true, kind: ""}
 }
 
 func (h *Handler) reportTransportFailure(w http.ResponseWriter, r *http.Request, idleCtx context.Context,
-	idleFired *atomic.Bool, cfg *config.Config, pool *routing.Pool, d *routing.Deployment,
+	idleFired *atomic.Bool, cfg *config.Config, pool *routing.Pool, t *routing.Target,
 	id string, allowFallback bool, err error) outcome {
 
 	// The watchdog first: a cancellation it caused is a stream that went silent, not
@@ -262,11 +262,11 @@ func (h *Handler) reportTransportFailure(w http.ResponseWriter, r *http.Request,
 	// as a disconnect, because a client disconnect also cancels the derived context.
 	if idleFired.Load() {
 		h.log.Warn("stream_idle", "request_id", id, "model", pool.Model,
-			"deployment", d.Name, "error", err)
-		h.metrics.UpstreamErrors.WithLabelValues(pool.Model, d.Name, "stream_idle").Inc()
-		h.metrics.StreamAborts.WithLabelValues(pool.Model, d.Name, "stream_idle").Inc()
+			"target", t.Name, "error", err)
+		h.metrics.UpstreamErrors.WithLabelValues(pool.Model, t.Name, "stream_idle").Inc()
+		h.metrics.StreamAborts.WithLabelValues(pool.Model, t.Name, "stream_idle").Inc()
 		if dur := cfg.Routing.Cooldown.Timeout.Std(); dur > 0 {
-			h.applyCooldown(cfg, pool, d, dur, "stream_idle", id)
+			h.applyCooldown(cfg, pool, t, dur, "stream_idle", id)
 		}
 		if allowFallback {
 			return outcome{kind: "stream_idle", fallbackable: true}
@@ -279,8 +279,8 @@ func (h *Handler) reportTransportFailure(w http.ResponseWriter, r *http.Request,
 	kind := "transport"
 	if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
 		h.log.Warn("client_disconnect", "request_id", id, "model", pool.Model,
-			"deployment", d.Name, "error", err)
-		h.metrics.ClientDisconnects.WithLabelValues(pool.Model, d.Name).Inc()
+			"target", t.Name, "error", err)
+		h.metrics.ClientDisconnects.WithLabelValues(pool.Model, t.Name).Inc()
 		return outcome{delivered: true, kind: "client_gone"}
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -288,11 +288,11 @@ func (h *Handler) reportTransportFailure(w http.ResponseWriter, r *http.Request,
 	}
 
 	h.log.Warn("upstream_request_failed", "request_id", id, "model", pool.Model,
-		"deployment", d.Name, "kind", kind, "error", err)
-	h.metrics.UpstreamErrors.WithLabelValues(pool.Model, d.Name, kind).Inc()
+		"target", t.Name, "kind", kind, "error", err)
+	h.metrics.UpstreamErrors.WithLabelValues(pool.Model, t.Name, kind).Inc()
 
 	if dur := cfg.Routing.Cooldown.Timeout.Std(); dur > 0 {
-		h.applyCooldown(cfg, pool, d, dur, kind, id)
+		h.applyCooldown(cfg, pool, t, dur, kind, id)
 	}
 
 	if allowFallback {
@@ -328,16 +328,16 @@ func (h *Handler) flush(w http.ResponseWriter, stream bool) {
 	}
 }
 
-func (h *Handler) applyCooldown(cfg *config.Config, pool *routing.Pool, d *routing.Deployment,
+func (h *Handler) applyCooldown(cfg *config.Config, pool *routing.Pool, t *routing.Target,
 	dur time.Duration, reason, id string) {
 	if dur <= 0 {
 		return
 	}
-	pool.Cooldown(d, dur, reason)
-	h.metrics.CooldownEvents.WithLabelValues(pool.Model, d.Name, reason).Inc()
-	h.metrics.CooldownActive.WithLabelValues(pool.Model, d.Name).Set(1)
-	h.log.Info("cooldown", "request_id", id, "model", pool.Model, "deployment", d.Name,
-		"reason", reason, "seconds", int64(dur/time.Second), "active", d.Active())
+	pool.Cooldown(t, dur, reason)
+	h.metrics.CooldownEvents.WithLabelValues(pool.Model, t.Name, reason).Inc()
+	h.metrics.CooldownActive.WithLabelValues(pool.Model, t.Name).Set(1)
+	h.log.Info("cooldown", "request_id", id, "model", pool.Model, "target", t.Name,
+		"reason", reason, "seconds", int64(dur/time.Second), "active", t.Active())
 }
 
 // copyBody copies without buffering the whole response. PlainRoute never holds a

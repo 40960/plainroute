@@ -28,7 +28,7 @@ func TestBaseURLRulesAreEnforcedAtLoad(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		_, err := Parse([]byte("models:\n  m:\n    upstream_model: m\n    deployments:\n      - name: a\n        base_url: "+c.baseURL+"\n        api_key_env: KEY_A\n"), Env{"KEY_A": "x"})
+		_, err := Parse([]byte("models:\n  m:\n    upstream_model: m\n    targets:\n      - name: a\n        base_url: "+c.baseURL+"\n        api_key_env: KEY_A\n"), Env{"KEY_A": "x"})
 		if c.want == "" {
 			if err != nil {
 				t.Errorf("base_url %q: unexpected rejection: %v", c.baseURL, err)

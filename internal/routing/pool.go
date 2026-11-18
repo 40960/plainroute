@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package routing picks which deployment serves a request.
+// Package routing picks which target serves a request.
 //
 // The rule that matters most in this package: one client request produces at
-// most one upstream attempt. A deployment that returns 429 is put into cooldown
+// most one upstream attempt. A target that returns 429 is put into cooldown
 // and the error is handed back to the client. PlainRoute never decides to try
 // another key inside the same request; the caller owns retries and backoff.
 package routing
@@ -16,8 +16,8 @@ import (
 	"github.com/40960/plainroute/internal/config"
 )
 
-// Deployment is one upstream endpoint with one key.
-type Deployment struct {
+// Target is one upstream endpoint with one key.
+type Target struct {
 	Name          string
 	Model         string // logical model, the alias the client used
 	UpstreamModel string // model name sent upstream
@@ -30,18 +30,18 @@ type Deployment struct {
 	state *State
 }
 
-// URL is the full upstream request URL for this deployment.
-func (d *Deployment) URL() string { return config.JoinPath(d.BaseURL, d.Endpoint) }
+// URL is the full upstream request URL for this target.
+func (t *Target) URL() string { return config.JoinPath(t.BaseURL, t.Endpoint) }
 
-// Active is the number of requests this deployment is holding.
-func (d *Deployment) Active() int { return d.state.Active() }
+// Active is the number of requests this target is holding.
+func (t *Target) Active() int { return t.state.Active() }
 
-// Available reports whether the deployment can be used right now.
-func (d *Deployment) Available() bool { return d.state.Available(d.MaxActive, time.Now()) }
+// Available reports whether the target can be used right now.
+func (t *Target) Available() bool { return t.state.Available(t.MaxActive, time.Now()) }
 
-// State is the runtime state of a deployment: requests in flight and whether it
-// is cooling down. It is keyed by model and deployment name, so a configuration
-// reload keeps the cooldown of a deployment that is still configured.
+// State is the runtime state of a target: requests in flight and whether it
+// is cooling down. It is keyed by model and target name, so a configuration
+// reload keeps the cooldown of a target that is still configured.
 type State struct {
 	mu             sync.Mutex
 	active         int
@@ -49,7 +49,7 @@ type State struct {
 	cooldownReason string
 }
 
-// Available reports whether the deployment can be used right now, without
+// Available reports whether the target can be used right now, without
 // reserving anything.
 func (s *State) Available(maxActive int, now time.Time) bool {
 	s.mu.Lock()
@@ -91,7 +91,7 @@ func (s *State) Active() int {
 	return s.active
 }
 
-// CoolDown puts the deployment out of the pool for d. A longer cooldown wins
+// CoolDown puts the target out of the pool for t. A longer cooldown wins
 // over a shorter one, so a long Retry-After is not overwritten by a later,
 // smaller value.
 func (s *State) CoolDown(dur time.Duration, reason string, now time.Time) {
@@ -107,7 +107,7 @@ func (s *State) CoolDown(dur time.Duration, reason string, now time.Time) {
 	}
 }
 
-// Remaining reports how long the deployment is still unavailable.
+// Remaining reports how long the target is still unavailable.
 func (s *State) Remaining(now time.Time) (time.Duration, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -123,7 +123,7 @@ func (s *State) Reason() string {
 	return s.cooldownReason
 }
 
-// StateStore hands out the same *State for the same model and deployment name
+// StateStore hands out the same *State for the same model and target name
 // across configuration reloads.
 type StateStore struct {
 	mu     sync.Mutex
@@ -146,11 +146,11 @@ func (s *StateStore) Get(model, name string) *State {
 	return st
 }
 
-// Pool is the set of deployments behind one logical model.
+// Pool is the set of targets behind one logical model.
 type Pool struct {
 	Model         string
 	UpstreamModel string
-	Deployments   []*Deployment
+	Targets       []*Target
 	Fallbacks     []string
 
 	strategy string
@@ -161,28 +161,28 @@ type Pool struct {
 
 // Status is a snapshot used for logging and metrics.
 type Status struct {
-	Model      string
-	Deployment string
-	Active     int
-	Cooling    bool
-	Remaining  time.Duration
-	Reason     string
+	Model     string
+	Target    string
+	Active    int
+	Cooling   bool
+	Remaining time.Duration
+	Reason    string
 }
 
-// Pick selects a healthy deployment and reserves a slot on it. It returns false
+// Pick selects a healthy target and reserves a slot on it. It returns false
 // when nothing is selectable, which is the only decision the gateway makes for a
 // request: the caller then reports the failure to the client instead of trying
-// another deployment.
-func (p *Pool) Pick() (*Deployment, bool) {
-	if len(p.Deployments) == 0 {
+// another target.
+func (p *Pool) Pick() (*Target, bool) {
+	if len(p.Targets) == 0 {
 		return nil, false
 	}
 	now := p.now()
 
-	candidates := make([]*Deployment, 0, len(p.Deployments))
-	for _, d := range p.Deployments {
-		if d.state.Available(d.MaxActive, now) {
-			candidates = append(candidates, d)
+	candidates := make([]*Target, 0, len(p.Targets))
+	for _, t := range p.Targets {
+		if t.state.Available(t.MaxActive, now) {
+			candidates = append(candidates, t)
 		}
 	}
 	if len(candidates) == 0 {
@@ -195,9 +195,9 @@ func (p *Pool) Pick() (*Deployment, bool) {
 		start := p.cursor
 		p.mu.Unlock()
 		// Rotate the candidate list so the next request starts where the last
-		// one left off, while cooling deployments keep their position out of the
+		// one left off, while cooling targets keep their position out of the
 		// rotation until they recover.
-		rotated := make([]*Deployment, 0, len(candidates))
+		rotated := make([]*Target, 0, len(candidates))
 		for i := range candidates {
 			rotated = append(rotated, candidates[(start+i)%len(candidates)])
 		}
@@ -210,37 +210,37 @@ func (p *Pool) Pick() (*Deployment, bool) {
 		})
 	}
 
-	for _, d := range candidates {
-		if d.state.TryAcquire(d.MaxActive, now) {
+	for _, t := range candidates {
+		if t.state.TryAcquire(t.MaxActive, now) {
 			if p.strategy == StrategyRoundRobin {
 				p.mu.Lock()
-				p.cursor = (p.cursor + 1) % len(p.Deployments)
+				p.cursor = (p.cursor + 1) % len(p.Targets)
 				p.mu.Unlock()
 			}
-			return d, true
+			return t, true
 		}
 	}
 	return nil, false
 }
 
 // Release gives back the slot taken by Pick. Callers must always call it.
-func (p *Pool) Release(d *Deployment) {
-	d.state.Release()
+func (p *Pool) Release(t *Target) {
+	t.state.Release()
 }
 
-// Cooldown marks a deployment unavailable for dur.
-func (p *Pool) Cooldown(d *Deployment, dur time.Duration, reason string) {
-	d.state.CoolDown(dur, reason, p.now())
+// Cooldown marks a target unavailable for dur.
+func (p *Pool) Cooldown(t *Target, dur time.Duration, reason string) {
+	t.state.CoolDown(dur, reason, p.now())
 }
 
-// EarliestRecovery reports how long until the first unavailable deployment can
-// be used again. ok is false when every deployment is currently usable.
+// EarliestRecovery reports how long until the first unavailable target can
+// be used again. ok is false when every target is currently usable.
 func (p *Pool) EarliestRecovery() (time.Duration, bool) {
 	now := p.now()
 	var earliest time.Duration
 	found := false
-	for _, d := range p.Deployments {
-		remaining, cooling := d.state.Remaining(now)
+	for _, t := range p.Targets {
+		remaining, cooling := t.state.Remaining(now)
 		if !cooling {
 			continue
 		}
@@ -251,19 +251,19 @@ func (p *Pool) EarliestRecovery() (time.Duration, bool) {
 	return earliest, found
 }
 
-// Snapshot returns the current state of every deployment in configuration order.
+// Snapshot returns the current state of every target in configuration order.
 func (p *Pool) Snapshot() []Status {
 	now := p.now()
-	out := make([]Status, 0, len(p.Deployments))
-	for _, d := range p.Deployments {
-		remaining, cooling := d.state.Remaining(now)
+	out := make([]Status, 0, len(p.Targets))
+	for _, t := range p.Targets {
+		remaining, cooling := t.state.Remaining(now)
 		out = append(out, Status{
-			Model:      p.Model,
-			Deployment: d.Name,
-			Active:     d.state.Active(),
-			Cooling:    cooling,
-			Remaining:  remaining,
-			Reason:     d.state.Reason(),
+			Model:     p.Model,
+			Target:    t.Name,
+			Active:    t.state.Active(),
+			Cooling:   cooling,
+			Remaining: remaining,
+			Reason:    t.state.Reason(),
 		})
 	}
 	return out

@@ -33,10 +33,10 @@ func isHopByHop(name string) bool { return hopByHop[strings.ToLower(name)] }
 // copyRequestHeaders builds the header set for the upstream request.
 //
 // Authorization is always replaced with the key configured for the selected
-// deployment, so a client cannot aim a request at a key it was not given.
+// target, so a client cannot aim a request at a key it was not given.
 // Content-Length is dropped because the body PlainRoute sends may differ from the
 // one the client counted, and the transport sets the correct value.
-func copyRequestHeaders(dst http.Header, src http.Header, cfg *config.Config, d *routing.Deployment, requestID string) {
+func copyRequestHeaders(dst http.Header, src http.Header, cfg *config.Config, d *routing.Target, requestID string) {
 	allowList := len(cfg.Headers.Allow) > 0 && cfg.Headers.Mode == "allow"
 	deny := map[string]bool{}
 	for _, name := range cfg.Headers.Deny {

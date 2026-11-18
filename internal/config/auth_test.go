@@ -16,11 +16,11 @@ func TestCallerKeyIsOffWhenNothingIsConfigured(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://example.invalid/v1
         api_key_env: DEPLOYMENT_KEY
-`), Env{"DEPLOYMENT_KEY": "deployment-key"})
+`), Env{"DEPLOYMENT_KEY": "target-key"})
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
@@ -36,19 +36,19 @@ auth:
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://example.invalid/v1
         api_key_env: DEPLOYMENT_KEY
-`), Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "deployment-key"})
+`), Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
 	if cfg.Auth.APIKey != "caller-key" {
 		t.Errorf("caller key: got %q, want the value from the environment", cfg.Auth.APIKey)
 	}
-	if cfg.Models["m"].Deployments[0].APIKey != "deployment-key" {
-		t.Errorf("the deployment key must stay separate from the caller key")
+	if cfg.Models["m"].Targets[0].APIKey != "target-key" {
+		t.Errorf("the target key must stay separate from the caller key")
 	}
 }
 
@@ -60,11 +60,11 @@ auth:
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://example.invalid/v1
         api_key_env: DEPLOYMENT_KEY
-`), Env{"DEPLOYMENT_KEY": "deployment-key"})
+`), Env{"DEPLOYMENT_KEY": "target-key"})
 	if err == nil {
 		t.Fatal("expected a startup failure for a named but unset caller key")
 	}
@@ -84,11 +84,11 @@ auth:
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://example.invalid/v1
         api_key_env: DEPLOYMENT_KEY
-`), Env{"DEPLOYMENT_KEY": "deployment-key"})
+`), Env{"DEPLOYMENT_KEY": "target-key"})
 	if err == nil {
 		t.Fatal("expected a key that nothing reads to be rejected")
 	}

@@ -3,7 +3,7 @@
 // Package proxy is PlainRoute's request path.
 //
 // One client request produces at most one upstream attempt. The gateway selects a
-// deployment, sends the body it received, copies the response bytes back and
+// target, sends the body it received, copies the response bytes back and
 // reports what happened. It does not parse model content, does not rebuild SSE
 // frames, and does not decide to try another key on its own.
 package proxy
@@ -66,7 +66,7 @@ func New(cfg *config.Config, m *metrics.Metrics, log *slog.Logger, store *routin
 }
 
 // Reload swaps in a validated config. Requests already running keep the snapshot
-// they took at the start; new requests use the new config. Deployment state
+// they took at the start; new requests use the new config. Target state
 // survives through the state store, so a cooldown is not lost on reload.
 func (h *Handler) Reload(cfg *config.Config) {
 	h.cfg.Store(cfg)
@@ -139,13 +139,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.reject(w, r, http.StatusNotFound, "page_not_found", "invalid_request_error",
-		"unknown path "+r.URL.Path, metrics.NoDeployment, "")
+		"unknown path "+r.URL.Path, metrics.NoTarget, "")
 }
 
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *config.Config) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		h.reject(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "invalid_request_error",
-			"models listing requires GET", metrics.NoDeployment, "")
+			"models listing requires GET", metrics.NoTarget, "")
 		return
 	}
 
@@ -153,12 +153,12 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *conf
 	h.metrics.GatewayRejected.WithLabelValues("all", "models_list").Inc()
 
 	type modelEntry struct {
-		ID          string `json:"id"`
-		Object      string `json:"object"`
-		Created     int64  `json:"created"`
-		OwnedBy     string `json:"owned_by"`
-		AliasOf     string `json:"aliased_of,omitempty"`
-		Deployments int    `json:"deployments"`
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+		AliasOf string `json:"aliased_of,omitempty"`
+		Targets int    `json:"targets"`
 	}
 
 	created := h.started.Unix()
@@ -169,22 +169,22 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *conf
 		if !seen[pool.Model] {
 			seen[pool.Model] = true
 			entries = append(entries, modelEntry{
-				ID:          pool.Model,
-				Object:      "model",
-				Created:     created,
-				OwnedBy:     "plainroute",
-				Deployments: len(pool.Deployments),
+				ID:      pool.Model,
+				Object:  "model",
+				Created: created,
+				OwnedBy: "plainroute",
+				Targets: len(pool.Targets),
 			})
 		}
 		if pool.UpstreamModel != pool.Model && !seen[pool.UpstreamModel] {
 			seen[pool.UpstreamModel] = true
 			entries = append(entries, modelEntry{
-				ID:          pool.UpstreamModel,
-				Object:      "model",
-				Created:     created,
-				OwnedBy:     "plainroute",
-				AliasOf:     pool.Model,
-				Deployments: len(pool.Deployments),
+				ID:      pool.UpstreamModel,
+				Object:  "model",
+				Created: created,
+				OwnedBy: "plainroute",
+				AliasOf: pool.Model,
+				Targets: len(pool.Targets),
 			})
 		}
 	}
@@ -192,21 +192,21 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *conf
 	body, err := json.Marshal(map[string]any{"object": "list", "data": entries})
 	if err != nil {
 		h.reject(w, r, http.StatusInternalServerError, "internal_error", "internal_error",
-			"model listing failed", metrics.NoDeployment, id)
+			"model listing failed", metrics.NoTarget, id)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", id)
 	w.WriteHeader(http.StatusOK)
-	h.writeToClient(w, body, "all", metrics.NoDeployment, id)
+	h.writeToClient(w, body, "all", metrics.NoTarget, id)
 }
 
 // handleChat is the whole gateway behaviour for one client request.
 func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config.Config) {
 	if r.Method != http.MethodPost {
 		h.reject(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "invalid_request_error",
-			"chat completions require POST", metrics.NoDeployment, "")
+			"chat completions require POST", metrics.NoTarget, "")
 		return
 	}
 
@@ -225,7 +225,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 			status, code = http.StatusRequestEntityTooLarge, "request_body_too_large"
 		}
 		h.metrics.GatewayRejected.WithLabelValues("all", code).Inc()
-		h.reject(w, r, status, code, "invalid_request_error", err.Error(), metrics.NoDeployment, id)
+		h.reject(w, r, status, code, "invalid_request_error", err.Error(), metrics.NoTarget, id)
 		return
 	}
 
@@ -233,13 +233,13 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 	if err != nil {
 		h.metrics.GatewayRejected.WithLabelValues("all", "invalid_json").Inc()
 		h.reject(w, r, http.StatusBadRequest, "invalid_json", "invalid_request_error",
-			err.Error(), metrics.NoDeployment, id)
+			err.Error(), metrics.NoTarget, id)
 		return
 	}
 	if peek.Model == "" {
 		h.metrics.GatewayRejected.WithLabelValues("all", "missing_model").Inc()
 		h.reject(w, r, http.StatusBadRequest, "missing_model", "invalid_request_error",
-			`field "model" is required`, metrics.NoDeployment, id)
+			`field "model" is required`, metrics.NoTarget, id)
 		return
 	}
 
@@ -247,30 +247,32 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 	if !ok {
 		h.metrics.GatewayRejected.WithLabelValues(peek.Model, "model_not_found").Inc()
 		h.reject(w, r, http.StatusNotFound, "model_not_found", "invalid_request_error",
-			"model "+peek.Model+" is not configured", metrics.NoDeployment, id)
+			"model "+peek.Model+" is not configured", metrics.NoTarget, id)
 		return
 	}
 
-	// Fallback targets are only built when fallbacks are explicitly enabled, and
-	// the cycle check at load time guarantees this walk cannot loop.
-	targets := []*routing.Pool{primary}
+	// The fallback chain is only built when fallbacks are explicitly enabled, and
+	// the cycle check at load time guarantees this walk cannot loop. It is a list
+	// of routes, not of targets: a fallback is a different route, and the target is
+	// picked inside that route.
+	chain := []*routing.Pool{primary}
 	if cfg.Fallback.Enabled {
 		seen := map[string]bool{primary.Model: true}
 		current := primary
-		for len(targets) <= cfg.Fallback.MaxHops && len(current.Fallbacks) > 0 {
+		for len(chain) <= cfg.Fallback.MaxHops && len(current.Fallbacks) > 0 {
 			next, ok := h.Registry().Lookup(current.Fallbacks[0])
 			if !ok || seen[next.Model] {
 				break
 			}
-			targets = append(targets, next)
+			chain = append(chain, next)
 			seen[next.Model] = true
 			current = next
 		}
 	}
 
 	var lastUnavailable *routing.Pool
-	for i, pool := range targets {
-		deployment, ok := pool.Pick()
+	for i, pool := range chain {
+		target, ok := pool.Pick()
 		if !ok {
 			lastUnavailable = pool
 			continue
@@ -279,7 +281,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 		// A fallback is only possible while nothing has been written to the
 		// client. Once a stream has started the gateway cannot take the response
 		// back, so it reports what it got.
-		result := h.attempt(w, r, cfg, pool, deployment, body, peek, id, start, i < len(targets)-1)
+		result := h.attempt(w, r, cfg, pool, target, body, peek, id, start, i < len(chain)-1)
 		if result.delivered {
 			return
 		}
@@ -287,18 +289,18 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 		h.log.Warn("model_fallback",
 			"request_id", id,
 			"from_model", pool.Model,
-			"to_model", targets[i+1].Model,
-			"deployment", deployment.Name,
+			"to_model", chain[i+1].Model,
+			"target", target.Name,
 			"reason", result.kind,
 		)
 	}
 
 	// Nothing was reachable. The gateway does not contact an upstream here: it
 	// answers from its own routing state, and Retry-After comes from the
-	// deployment that recovers first.
+	// target that recovers first.
 	if lastUnavailable == nil {
 		h.reject(w, r, http.StatusInternalServerError, "internal_error", "internal_error",
-			"no deployment state", metrics.NoDeployment, id)
+			"no target state", metrics.NoTarget, id)
 		return
 	}
 
@@ -309,26 +311,26 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 	w.Header().Set("Retry-After", retryAfterSeconds(remaining))
 	h.metrics.GatewayRejected.WithLabelValues(lastUnavailable.Model, "all_deployments_cooling_down").Inc()
 	h.reject(w, r, http.StatusTooManyRequests, "all_deployments_cooling_down", "rate_limit_error",
-		"No healthy deployments are currently available", metrics.NoDeployment, id)
+		"No healthy targets are currently available", metrics.NoTarget, id)
 }
 
 func (h *Handler) reject(w http.ResponseWriter, r *http.Request, status int, code, typ, message, model, id string) {
-	h.metrics.RequestsTotal.WithLabelValues(model, metrics.NoDeployment, metrics.StatusClass(status)).Inc()
+	h.metrics.RequestsTotal.WithLabelValues(model, metrics.NoTarget, metrics.StatusClass(status)).Inc()
 	h.log.Warn("gateway_response", "request_id", id, "model", model, "status", status, "code", code)
 	if id != "" {
 		w.Header().Set("X-Request-Id", id)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	h.writeToClient(w, errorBody(message, typ, code), model, metrics.NoDeployment, id)
+	h.writeToClient(w, errorBody(message, typ, code), model, metrics.NoTarget, id)
 }
 
 // authorize checks the api key a caller presents, and is reached only for the API endpoints.
 // The comparison is constant time, so a wrong key does not show how many bytes matched.
 //
-// The caller key and the deployment key are different things. The caller key decides who may
+// The caller key and the target key are different things. The caller key decides who may
 // use the gateway; the key that goes upstream is always the one configured for the selected
-// deployment, so a caller cannot aim a request at a key the operator did not give it.
+// target, so a caller cannot aim a request at a key the operator did not give it.
 func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, cfg *config.Config) bool {
 	if cfg.Auth.APIKey == "" {
 		return true
@@ -350,17 +352,17 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, cfg *config.
 func (h *Handler) status(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
-	h.writeToClient(w, []byte(message+"\n"), metrics.NoModel, metrics.NoDeployment, "")
+	h.writeToClient(w, []byte(message+"\n"), metrics.NoModel, metrics.NoTarget, "")
 }
 
 // writeToClient writes a body the gateway produced itself. A failed write means the
 // client went away before the answer arrived, so it is recorded the same way as a
 // disconnect anywhere else in the request path.
-func (h *Handler) writeToClient(w http.ResponseWriter, body []byte, model, deployment, id string) {
+func (h *Handler) writeToClient(w http.ResponseWriter, body []byte, model, target, id string) {
 	if _, err := w.Write(body); err != nil {
-		h.metrics.ClientDisconnects.WithLabelValues(model, deployment).Inc()
+		h.metrics.ClientDisconnects.WithLabelValues(model, target).Inc()
 		h.log.Warn("client_disconnect", "request_id", id, "model", model,
-			"deployment", deployment, "error", err)
+			"target", target, "error", err)
 	}
 }
 

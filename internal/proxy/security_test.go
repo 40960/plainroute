@@ -23,7 +23,7 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -88,14 +88,14 @@ models:
 }
 
 // TestMetricsPageCarriesNoSecret checks the exposition page the way the log is checked:
-// the labels are model, deployment and status class, so a key value must not appear
+// the labels are model, target and status class, so a key value must not appear
 // anywhere on the page, and neither must prompt content.
 func TestMetricsPageCarriesNoSecret(t *testing.T) {
 	h := newHarness(t, `
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -126,7 +126,7 @@ func TestBodyFieldsCannotChooseTheUpstreamHost(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A

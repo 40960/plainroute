@@ -50,10 +50,10 @@ the behaviours this project exists for. It is the check that a unit test cannot 
 - The two tests that matter most are the byte-for-byte streaming test and the no
   amplification test. They must keep passing.
 - Do not weaken an assertion to make a test green. If a test fails, find out why: routing
-  picks the quietest deployment, so an expected deployment is often not the one you
+  picks the quietest target, so an expected target is often not the one you
   guessed.
 - The fake upstream is keyed by the API key value, because that is what identifies a
-  deployment.
+  target.
 
 ## Style
 

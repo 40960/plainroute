@@ -14,7 +14,7 @@ import (
 )
 
 // The fake upstream is the thing every other test trusts, so it needs its own checks.
-// These tests use the fixed paths the project requires, exactly as a deployment uses them:
+// These tests use the fixed paths the project requires, exactly as a target uses them:
 // the base URL is the path part, and the endpoint is appended to it.
 
 func TestRequiredPathsProduceTheShapesTheyPromise(t *testing.T) {
@@ -43,7 +43,7 @@ func TestRequiredPathsProduceTheShapesTheyPromise(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		// A deployment path is the base URL plus the endpoint, which is how the gateway
+		// A target path is the base URL plus the endpoint, which is how the gateway
 		// builds the URL it requests.
 		url := server.URL + c.path + "/chat/completions"
 		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(`{"model":"m","stream":true}`))

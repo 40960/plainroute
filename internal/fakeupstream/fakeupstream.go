@@ -4,7 +4,7 @@
 // the end-to-end script.
 //
 // Behaviour is chosen by the API key the gateway presents, because a key is what
-// identifies a deployment. A sequence of behaviours can be configured per key, so
+// identifies a target. A sequence of behaviours can be configured per key, so
 // a test can say: first request 429, second request 200. The server counts every
 // request it sees, which is how the tests prove that client requests and upstream
 // attempts are the same number.
@@ -255,7 +255,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.behaviors[key] = behavior
 	}
 	if r.URL.Path != "/v1/chat/completions" {
-		// A deployment's base URL is the path part that selects the behaviour, so
+		// A target's base URL is the path part that selects the behaviour, so
 		// http://host/429 answers the /429 case even though the endpoint is appended.
 		base := strings.TrimSuffix(r.URL.Path, "/chat/completions")
 		if byPath, ok := pathBehaviour(base); ok {

@@ -26,7 +26,7 @@ func TestFlushHappensPerChunk(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -80,7 +80,7 @@ func TestSlowStreamSurvives(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -134,7 +134,7 @@ func TestStreamIdleTimeoutEndsTheRequest(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -174,7 +174,7 @@ routing:
 		t.Errorf("the idle timeout was not recorded in the log: %s", h.log.String())
 	}
 	if !strings.Contains(h.log.String(), "cooldown") {
-		t.Error("the idle timeout did not cool the deployment down")
+		t.Error("the idle timeout did not cool the target down")
 	}
 }
 
@@ -186,7 +186,7 @@ func TestIdleBeforeFirstByteIsNotAClientDisconnect(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -222,7 +222,7 @@ func TestClientDisconnectCancelsUpstream(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -278,7 +278,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -300,7 +300,7 @@ timeouts:
 	for _, pool := range h.handler.Registry().Pools() {
 		for _, s := range pool.Snapshot() {
 			if s.Active != 0 {
-				t.Errorf("%s leaked %d active requests", s.Deployment, s.Active)
+				t.Errorf("%s leaked %d active requests", s.Target, s.Active)
 			}
 		}
 	}
@@ -380,7 +380,7 @@ func TestFuzzLikeInputs(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -421,7 +421,7 @@ func TestUpstreamClosingMidStreamIsNotReportedAsSuccess(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -463,7 +463,7 @@ server:
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -503,7 +503,7 @@ server:
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -531,7 +531,7 @@ func TestConcurrentRequests(t *testing.T) {
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -600,7 +600,7 @@ models:
 	for _, pool := range h.handler.Registry().Pools() {
 		for _, s := range pool.Snapshot() {
 			if s.Active != 0 {
-				t.Errorf("%s leaked %d active requests", s.Deployment, s.Active)
+				t.Errorf("%s leaked %d active requests", s.Target, s.Active)
 			}
 		}
 	}
@@ -613,7 +613,7 @@ func TestGracefulShutdownDrains(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A

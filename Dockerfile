@@ -30,7 +30,7 @@ EXPOSE 8080
 
 # The health check is the live endpoint, not a shell: a container that cannot answer
 # /healthz is not serving. Readiness is checked by the orchestrator, not here, because
-# readiness is what a deployment decides and an upstream cooldown must not fail it.
+# readiness is what a target decides and an upstream cooldown must not fail it.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -q -O - http://127.0.0.1:8080/healthz || exit 1
 

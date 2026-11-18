@@ -38,7 +38,7 @@ func testPool(strategy string, names []string, clock *fakeClock) *Pool {
 	}
 	store := NewStateStore()
 	for _, name := range names {
-		pool.Deployments = append(pool.Deployments, &Deployment{
+		pool.Targets = append(pool.Targets, &Target{
 			Name:  name,
 			Model: "demo",
 			state: store.Get("demo", name),
@@ -51,7 +51,7 @@ func TestLeastActivePrefersTheQuietestDeployment(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1700000000, 0)}
 	pool := testPool(StrategyLeastActive, []string{"a", "b", "c"}, clock)
 
-	// Nothing has been released yet, so each pick takes the quietest deployment;
+	// Nothing has been released yet, so each pick takes the quietest target;
 	// ties resolve to configuration order, which keeps the sequence reproducible.
 	want := []string{"a", "b", "c"}
 	for i, expect := range want {
@@ -67,7 +67,7 @@ func TestLeastActivePrefersTheQuietestDeployment(t *testing.T) {
 	// a and b have been released, c still holds one request, so the quietest is
 	// a again.
 	for _, name := range []string{"a", "b"} {
-		pool.Release(pool.Deployments[indexOf(pool, name)])
+		pool.Release(pool.Targets[indexOf(pool, name)])
 	}
 	d, _ := pool.Pick()
 	if d.Name != "a" {
@@ -90,9 +90,9 @@ func TestRoundRobinRotatesHealthyDeployments(t *testing.T) {
 		}
 	}
 
-	// Cooldown removes c from rotation; the remaining deployments keep their
+	// Cooldown removes c from rotation; the remaining targets keep their
 	// relative order instead of restarting from the top.
-	pool.Cooldown(pool.Deployments[indexOf(pool, "c")], 10*time.Second, "rate_limit")
+	pool.Cooldown(pool.Targets[indexOf(pool, "c")], 10*time.Second, "rate_limit")
 	for _, expect := range []string{"a", "b"} {
 		d, ok := pool.Pick()
 		if !ok {
@@ -108,7 +108,7 @@ func TestCoolingDownDeploymentIsNotSelectedAndRejoinsAfterRecovery(t *testing.T)
 	clock := &fakeClock{t: time.Unix(1700000000, 0)}
 	pool := testPool(StrategyLeastActive, []string{"a", "b"}, clock)
 
-	a := pool.Deployments[0]
+	a := pool.Targets[0]
 	pool.Cooldown(a, 10*time.Second, "rate_limit")
 
 	d, ok := pool.Pick()
@@ -147,20 +147,20 @@ func TestEarliestRecoveryUsesTheSoonestDeployment(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1700000000, 0)}
 	pool := testPool(StrategyLeastActive, []string{"a", "b", "c"}, clock)
 
-	pool.Cooldown(pool.Deployments[0], 30*time.Second, "rate_limit")
-	pool.Cooldown(pool.Deployments[1], 12*time.Second, "rate_limit")
-	pool.Cooldown(pool.Deployments[2], 25*time.Second, "rate_limit")
+	pool.Cooldown(pool.Targets[0], 30*time.Second, "rate_limit")
+	pool.Cooldown(pool.Targets[1], 12*time.Second, "rate_limit")
+	pool.Cooldown(pool.Targets[2], 25*time.Second, "rate_limit")
 
 	remaining, ok := pool.EarliestRecovery()
 	if !ok {
-		t.Fatal("expected a deployment to be cooling down")
+		t.Fatal("expected a target to be cooling down")
 	}
 	if remaining != 12*time.Second {
 		t.Errorf("got %s, want 12s", remaining)
 	}
 
 	if _, ok := pool.Pick(); ok {
-		t.Error("a pool where every deployment is cooling must not select one")
+		t.Error("a pool where every target is cooling must not select one")
 	}
 
 	clock.Advance(12 * time.Second)
@@ -173,8 +173,8 @@ func TestEarliestRecoveryUsesTheSoonestDeployment(t *testing.T) {
 func TestMaxActiveLimitsASingleDeployment(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1700000000, 0)}
 	pool := testPool(StrategyLeastActive, []string{"a", "b"}, clock)
-	pool.Deployments[0].MaxActive = 1
-	pool.Deployments[1].MaxActive = 1
+	pool.Targets[0].MaxActive = 1
+	pool.Targets[1].MaxActive = 1
 
 	d, ok := pool.Pick()
 	if !ok || d.Name != "a" {
@@ -198,12 +198,12 @@ func TestMaxActiveLimitsASingleDeployment(t *testing.T) {
 }
 
 // TestConcurrentSelection is the race-detector coverage for the counter: many
-// goroutines acquire at once, and no deployment may ever hold more requests
+// goroutines acquire at once, and no target may ever hold more requests
 // than its limit.
 func TestConcurrentSelection(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1700000000, 0)}
 	pool := testPool(StrategyLeastActive, []string{"a", "b", "c"}, clock)
-	for _, d := range pool.Deployments {
+	for _, d := range pool.Targets {
 		d.MaxActive = 4
 	}
 
@@ -243,7 +243,7 @@ func TestConcurrentSelection(t *testing.T) {
 	if overLimit.Load() != 0 {
 		t.Errorf("max_active violated %d times (max observed %d, limit 4)", overLimit.Load(), maxObserved.Load())
 	}
-	for _, d := range pool.Deployments {
+	for _, d := range pool.Targets {
 		if active := d.state.Active(); active != 0 {
 			t.Errorf("%s leaked %d active requests", d.Name, active)
 		}
@@ -254,7 +254,7 @@ func TestConcurrentSelection(t *testing.T) {
 }
 
 // TestStateSurvivesReload checks that a config reload does not reset a cooldown
-// that is still in effect for a deployment that is still configured.
+// that is still in effect for a target that is still configured.
 func TestStateSurvivesReload(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1700000000, 0)}
 	store := NewStateStore()
@@ -263,7 +263,7 @@ func TestStateSurvivesReload(t *testing.T) {
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: account-1
         base_url: http://127.0.0.1:8081
         api_key_env: K1
@@ -277,13 +277,13 @@ models:
 
 	first := New(cfg, store, clock.Now)
 	pool := first.pools["demo"]
-	pool.Cooldown(pool.Deployments[0], 10*time.Second, "rate_limit")
+	pool.Cooldown(pool.Targets[0], 10*time.Second, "rate_limit")
 
 	reloaded, err := config.Parse([]byte(`
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: account-1
         base_url: http://127.0.0.1:8081
         api_key_env: K1
@@ -299,7 +299,7 @@ models:
 	}
 	second := New(reloaded, store, clock.Now)
 
-	remaining, cooling := second.pools["demo"].Deployments[0].state.Remaining(clock.Now())
+	remaining, cooling := second.pools["demo"].Targets[0].state.Remaining(clock.Now())
 	if !cooling || remaining != 10*time.Second {
 		t.Errorf("reload lost the cooldown: remaining=%v cooling=%v", remaining, cooling)
 	}
@@ -320,13 +320,13 @@ func TestLookupAcceptsAliasAndRealModelName(t *testing.T) {
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: a
         base_url: http://127.0.0.1:8081
         api_key_env: K
   two:
     upstream_model: provider/model-two
-    deployments:
+    targets:
       - name: b
         base_url: http://127.0.0.1:8081
         api_key_env: K
@@ -354,7 +354,7 @@ models:
 }
 
 func indexOf(pool *Pool, name string) int {
-	for i, d := range pool.Deployments {
+	for i, d := range pool.Targets {
 		if d.Name == name {
 			return i
 		}

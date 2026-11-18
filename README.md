@@ -4,14 +4,14 @@
 
 > **A small, boring, transparent LLM gateway.**
 
-PlainRoute is an OpenAI-compatible HTTP gateway in front of one or more deployments of
-the same model. It routes a request to a deployment, sends the body it received, copies
+PlainRoute is an OpenAI-compatible HTTP gateway in front of one or more targets of
+the same model. It routes a request to a target, sends the body it received, copies
 the response bytes back, and reports what happened. It does not rewrite the response,
 does not retry on its own, and does not grow features that touch the streaming path.
 
-A deployment is one upstream target: a base URL, one key read from the environment,
+A target is one upstream entry: a base URL, one key read from the environment,
 and its own endpoint path, headers and concurrency limit. The model name comes from
-the model entry, not from the deployment, so the deployments under one name all
+the model entry, not from the target, so the targets under one name all
 serve that name. Different names are not balanced against each other; a different
 model is reached only through a configured fallback.
 
@@ -25,10 +25,10 @@ endorsement or an affiliation.
 ## What it does
 
 - One upstream attempt per client request. Never more.
-- Load balancing across deployments of the same model: one selection per request,
+- Load balancing across targets of the same model: one selection per request,
   `least_active` by default or `round_robin`, and ties keep config order. There is
   no failover inside a single request.
-- Per-deployment cooldown: a deployment that returned a status code is taken out of the
+- Per-target cooldown: a target that returned a status code is taken out of the
   pool for the configured time, or for the upstream's own `Retry-After`, whichever is
   shorter than the configured maximum.
 - Model alias mapping: the name a client sends can map to the real name the upstream
@@ -56,7 +56,7 @@ things cannot promise what the client asked for, and it cannot promise that one 
 did not become five requests.
 
 PlainRoute exists for the case where you want the boring thing: many accounts or
-deployments behind one name, a key that got rate limited is taken out of the pool, the
+targets behind one name, a key that got rate limited is taken out of the pool, the
 response is what the provider sent. If a gateway answers a request the provider answered
 successfully, that is a bug in this project.
 
@@ -87,7 +87,7 @@ file, and the gateway never writes a key into a log line.
 models:
   demo:
     upstream_model: provider/model-one
-    deployments:
+    targets:
       - name: account-1
         base_url: https://api.example.com/v1
         api_key_env: EXAMPLE_API_KEY_1
@@ -99,7 +99,7 @@ models:
 ```
 
 A client asks for `demo`. The gateway sends `provider/model-one` and the key from the
-environment variable of the deployment it picked. The response comes back as the provider
+environment variable of the target it picked. The response comes back as the provider
 produced it.
 
 ## Multiple accounts example
@@ -121,7 +121,7 @@ routing:
 models:
   chat:
     upstream_model: gpt-4o-mini
-    deployments:
+    targets:
       - name: work
         base_url: https://api.openai.com/v1
         api_key_env: OPENAI_WORK_KEY
@@ -146,10 +146,10 @@ Anything that speaks the OpenAI shape works, including a local server:
 models:
   local:
     upstream_model: qwen3:8b
-    deployments:
+    targets:
       - name: ollama
         base_url: http://127.0.0.1:11434/v1
-        api_key_env: LOCAL_KEY    # any value; the key is still what identifies the deployment
+        api_key_env: LOCAL_KEY    # any value; the key is still what identifies the target
 ```
 
 ## Api key gate (optional)
@@ -174,9 +174,9 @@ auth:
   the name it read, never the value, so a collision is at least visible in the log.
 - The key is read the ordinary way: `Authorization: Bearer <key>`, which is what any
   OpenAI-compatible client already sends. No separate header, no second naming scheme.
-- The caller key and the deployment key are different things. The caller key decides who may
+- The caller key and the target key are different things. The caller key decides who may
   use the gateway; the key that goes upstream is always the one the operator configured for
-  the selected deployment, so a caller cannot aim a request at a key it was not given. The
+  the selected target, so a caller cannot aim a request at a key it was not given. The
   caller key is never forwarded, never logged, and never appears in a metric label.
 - The gate covers the API endpoints (`/v1/*`). Health, readiness and the metrics page stay
   open, because a monitoring system that cannot authenticate is the ordinary case and those
@@ -190,28 +190,28 @@ auth:
 
 ## Routing and cooldown semantics
 
-- A deployment is selectable when it is not cooling down and has not reached
+- A target is selectable when it is not cooling down and has not reached
   `max_active`.
 - Selection is `least_active` by default, with `round_robin` as the other option. Ties
   keep config order, so the choice is reproducible rather than random.
 - The two strategies answer different questions, and this was measured rather than assumed:
-  12 sequential requests with four deployments gave `round_robin` 3/3/3/3 and `least_active`
+  12 sequential requests with four targets gave `round_robin` 3/3/3/3 and `least_active`
   12/0/0/0, because sequential traffic never overlaps and every request ties on "fewest in
   flight". If the limit you care about is per key, spread with `round_robin`; if it is per
   connection pool, `least_active` is the closer fit. Under real concurrency both converge.
 - Cooldown length comes from `routing.cooldown.status`, and a `Retry-After` from the
   upstream wins when it is present. The value is clamped by `routing.cooldown.max` so a
-  hostile or broken upstream value cannot make a deployment unavailable for an
+  hostile or broken upstream value cannot make a target unavailable for an
   unreasonable time. An unparseable `Retry-After` falls back to the configured duration.
-- When every deployment for a model is cooling, the gateway does not contact an upstream.
+- When every target for a model is cooling, the gateway does not contact an upstream.
   It answers 429 with the OpenAI error shape and `code: all_deployments_cooling_down`,
-  and `Retry-After` is the recovery time of the deployment that recovers first.
+  and `Retry-After` is the recovery time of the target that recovers first.
 - The `Retry-After` the gateway sends is the window it actually applied, not whatever the
   upstream printed.
 - The gateway does not follow redirects. Upstream URLs come from config only, so a
   response body cannot point the proxy at a host that was not configured.
 - Hop-by-hop headers are dropped in both directions. `Authorization` is always the key
-  configured for the selected deployment, so a client cannot aim a request at a key it
+  configured for the selected target, so a client cannot aim a request at a key it
   was not given.
 
 ## Why retry is off by default
@@ -254,18 +254,18 @@ upstream attempts, and the metrics must report the same numbers.
 
 | Metric | What it is |
 | --- | --- |
-| `plainroute_requests_total{model,deployment,status_class}` | Client requests handled |
-| `plainroute_upstream_attempts_total{model,deployment,status_class}` | Upstream requests actually sent |
-| `plainroute_active_requests{model,deployment}` | Requests in flight per deployment |
-| `plainroute_deployment_in_cooldown{model,deployment}` | 1 while a deployment is cooling |
-| `plainroute_cooldown_events_total{model,deployment,reason}` | Times a deployment was cooled down |
-| `plainroute_request_duration_seconds{model,deployment,stream}` | End to end duration, per request |
-| `plainroute_ttft_seconds{model,deployment}` | Time to the first upstream byte |
-| `plainroute_stream_duration_seconds{model,deployment}` | Duration of a streamed response |
-| `plainroute_bytes_streamed_total{model,deployment}` | Bytes copied to clients |
-| `plainroute_upstream_errors_total{model,deployment,kind}` | Upstream failures by kind |
-| `plainroute_client_disconnects_total{model,deployment}` | Clients that went away |
-| `plainroute_stream_aborts_total{model,deployment,reason}` | Streams ended by the gateway |
+| `plainroute_requests_total{model,target,status_class}` | Client requests handled |
+| `plainroute_upstream_attempts_total{model,target,status_class}` | Upstream requests actually sent |
+| `plainroute_active_requests{model,target}` | Requests in flight per target |
+| `plainroute_target_in_cooldown{model,target}` | 1 while a target is cooling |
+| `plainroute_cooldown_events_total{model,target,reason}` | Times a target was cooled down |
+| `plainroute_request_duration_seconds{model,target,stream}` | End to end duration, per request |
+| `plainroute_ttft_seconds{model,target}` | Time to the first upstream byte |
+| `plainroute_stream_duration_seconds{model,target}` | Duration of a streamed response |
+| `plainroute_bytes_streamed_total{model,target}` | Bytes copied to clients |
+| `plainroute_upstream_errors_total{model,target,kind}` | Upstream failures by kind |
+| `plainroute_client_disconnects_total{model,target}` | Clients that went away |
+| `plainroute_stream_aborts_total{model,target,reason}` | Streams ended by the gateway |
 | `plainroute_gateway_rejected_total{model,code}` | Requests the gateway answered from its own state |
 | `plainroute_config_reloads_total{outcome}` | SIGHUP reloads, by outcome |
 | `plainroute_in_flight_requests` | Requests being handled right now |
@@ -280,7 +280,7 @@ When the api key gate is on, its rejections are part of that difference: they ar
 the gateway from its own state, with `model="none"` and `code="invalid_api_key"`, and no
 upstream is contacted.
 
-Logs carry routing facts only: request id, logical model, upstream model, deployment,
+Logs carry routing facts only: request id, logical model, upstream model, target,
 status, duration, time to first byte, bytes streamed, cooldown events, disconnects. There is
 no field in the logging package that could hold a key, a prompt or a response body, so a
 log line cannot leak one by accident.
@@ -304,7 +304,7 @@ failure rather than a request that fails later.
 
 The image is 28 MB, runs as a named non-root user, and has no write access anywhere. The
 health check is the live endpoint. Readiness is not checked inside the image, because a
-deployment that is cooling down is still a healthy container.
+target that is cooling down is still a healthy container.
 
 The compose file is the shape this project runs in production: loopback-only mapping,
 read-only root filesystem, all capabilities dropped, `no-new-privileges`, a pid and memory
@@ -335,10 +335,10 @@ from this repository automatically; the CI job builds the image without pushing 
 - Authentication is optional and off by default. When `auth.api_key_env` resolves to a value,
   the api key a caller presents is compared in constant time, on the API endpoints only. With
   nothing configured there is no gate, and then any process that can reach the listening port
-  can use the configured deployments — which is why the compose file maps the port on
+  can use the configured targets — which is why the compose file maps the port on
   loopback only.
 - The caller api key is never forwarded upstream, never logged, and never appears in a metric
-  label. The key the provider sees is always the deployment key.
+  label. The key the provider sees is always the target key.
 - There is no authorisation, no accounts and no multi-tenancy. One optional key decides who
   may call; it does not say who is calling. If you need that, it belongs in front of the
   gateway.
@@ -368,7 +368,7 @@ Known and deliberate. These are not bugs to be fixed by adding complexity:
 
 **Every request gets 429 from the gateway with `all_deployments_cooling_down`.** The
 gateway is answering from its own state, not from a provider. Look at `Retry-After`: it is
-the recovery time of the deployment that recovers first. If the window is longer than you
+the recovery time of the target that recovers first. If the window is longer than you
 expected, the upstream sent a big `Retry-After`, and `routing.cooldown.max` clamped it.
 
 **A stream ends without `[DONE]`.** The upstream stopped sending. The gateway does not
@@ -402,7 +402,7 @@ another program exported, so the gate is holding that program's value.
 
 **Reload did nothing.** A failed `SIGHUP` reload keeps the running config instead of
 breaking a working gateway. The failure is logged and counted in
-`plainroute_config_reloads_total{outcome="failed"}`. Deployment state, including cooldowns,
+`plainroute_config_reloads_total{outcome="failed"}`. Target state, including cooldowns,
 survives a successful reload.
 
 ## License

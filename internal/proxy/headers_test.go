@@ -15,11 +15,11 @@ import (
 // including the cases a client controls.
 
 func TestHopByHopHeadersAreDroppedInBothDirections(t *testing.T) {
-	cfg, err := config.Parse([]byte("models:\n  m:\n    upstream_model: m\n    deployments:\n      - name: a\n        base_url: https://fake.invalid/v1\n        api_key_env: KEY_A\n"), config.Env{"KEY_A": "key-a"})
+	cfg, err := config.Parse([]byte("models:\n  m:\n    upstream_model: m\n    targets:\n      - name: a\n        base_url: https://fake.invalid/v1\n        api_key_env: KEY_A\n"), config.Env{"KEY_A": "key-a"})
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	d := &routing.Deployment{Name: "a", APIKey: "key-a"}
+	d := &routing.Target{Name: "a", APIKey: "key-a"}
 
 	src := http.Header{}
 	src.Set("Connection", "keep-alive")
@@ -63,7 +63,7 @@ func TestHopByHopHeadersAreDroppedInBothDirections(t *testing.T) {
 // the client chooses the model, not the key. A client that sends its own Authorization
 // must not be able to aim a request at a key the operator did not give it.
 func TestAuthorizationIsAlwaysTheConfiguredKey(t *testing.T) {
-	cfg, err := config.Parse([]byte("models:\n  m:\n    upstream_model: m\n    deployments:\n      - name: a\n        base_url: https://fake.invalid/v1\n        api_key_env: KEY_A\n"), config.Env{"KEY_A": "key-a"})
+	cfg, err := config.Parse([]byte("models:\n  m:\n    upstream_model: m\n    targets:\n      - name: a\n        base_url: https://fake.invalid/v1\n        api_key_env: KEY_A\n"), config.Env{"KEY_A": "key-a"})
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
@@ -72,10 +72,10 @@ func TestAuthorizationIsAlwaysTheConfiguredKey(t *testing.T) {
 	src.Set("Authorization", "Bearer whatever-the-client-sent")
 
 	dst := http.Header{}
-	copyRequestHeaders(dst, src, cfg, &routing.Deployment{Name: "a", APIKey: "key-a"}, "id-1")
+	copyRequestHeaders(dst, src, cfg, &routing.Target{Name: "a", APIKey: "key-a"}, "id-1")
 
 	if got := dst.Get("Authorization"); got != "Bearer key-a" {
-		t.Errorf("Authorization: got %q, want the configured deployment key", got)
+		t.Errorf("Authorization: got %q, want the configured target key", got)
 	}
 }
 
@@ -86,7 +86,7 @@ func TestDenyModeForwardsEverythingExceptDeny(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -103,7 +103,7 @@ models:
 	src.Set("Host", "gateway.example")
 
 	dst := http.Header{}
-	copyRequestHeaders(dst, src, cfg, &routing.Deployment{Name: "a", APIKey: "key-a"}, "id-2")
+	copyRequestHeaders(dst, src, cfg, &routing.Target{Name: "a", APIKey: "key-a"}, "id-2")
 
 	if dst.Get("Cookie") != "" || dst.Get("X-Forwarded-For") != "" {
 		t.Errorf("deny mode forwarded a denied header: %v", dst)
@@ -126,7 +126,7 @@ func TestAllowModeForwardsOnlyWhatIsListed(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -141,7 +141,7 @@ models:
 	src.Set("User-Agent", "something")
 
 	dst := http.Header{}
-	copyRequestHeaders(dst, src, cfg, &routing.Deployment{Name: "a", APIKey: "key-a"}, "id-3")
+	copyRequestHeaders(dst, src, cfg, &routing.Target{Name: "a", APIKey: "key-a"}, "id-3")
 
 	if dst.Get("Accept") != "application/json" || dst.Get("X-Request-Id") != "id-3" {
 		t.Errorf("allow mode dropped a listed header: %v", dst)
@@ -151,7 +151,7 @@ models:
 	}
 }
 
-// A per-deployment header is what a provider requires that a client cannot control, for
+// A per-target header is what a provider requires that a client cannot control, for
 // example an org id. It must survive, and it must not be able to smuggle a per-connection
 // header through the back door.
 func TestDeploymentAndExtraHeadersAreApplied(t *testing.T) {
@@ -162,12 +162,12 @@ func TestDeploymentAndExtraHeadersAreApplied(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
         headers:
-          X-Deployment-Header: deployment
+          X-Target-Header: target
           Connection: close
 `), config.Env{"KEY_A": "key-a"})
 	if err != nil {
@@ -175,12 +175,12 @@ models:
 	}
 
 	dst := http.Header{}
-	copyRequestHeaders(dst, http.Header{}, cfg, &routing.Deployment{Name: "a", APIKey: "key-a", Headers: map[string]string{
-		"X-Deployment-Header": "deployment",
-		"Connection":          "close",
+	copyRequestHeaders(dst, http.Header{}, cfg, &routing.Target{Name: "a", APIKey: "key-a", Headers: map[string]string{
+		"X-Target-Header": "target",
+		"Connection":      "close",
 	}}, "id-4")
 
-	if dst.Get("X-Deployment-Header") != "deployment" || dst.Get("X-Plainroute-Test") != "gateway" {
+	if dst.Get("X-Target-Header") != "target" || dst.Get("X-Plainroute-Test") != "gateway" {
 		t.Errorf("configured headers were not applied: %v", dst)
 	}
 	if dst.Get("Connection") != "" {
@@ -195,7 +195,7 @@ func TestRequestIDForwardingCanBeTurnedOff(t *testing.T) {
 models:
   m:
     upstream_model: m
-    deployments:
+    targets:
       - name: a
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
@@ -205,7 +205,7 @@ models:
 	}
 
 	dst := http.Header{}
-	copyRequestHeaders(dst, http.Header{}, cfg, &routing.Deployment{Name: "a", APIKey: "key-a"}, "id-5")
+	copyRequestHeaders(dst, http.Header{}, cfg, &routing.Target{Name: "a", APIKey: "key-a"}, "id-5")
 	if dst.Get("X-Request-Id") != "" {
 		t.Errorf("request id forwarded while forwarding is off: %v", dst)
 	}
