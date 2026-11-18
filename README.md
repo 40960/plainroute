@@ -40,8 +40,8 @@ endorsement or an affiliation.
   The response is never rewritten, so the model a client reads back is the one the
   upstream wrote, which is not necessarily the name the client sent.
 - `/v1/models` reports route names, the distinct model names behind each, and the
-  target count. A route name is what a client sends in the `model` field, and it is not
-  necessarily a model name.
+  target count. The route name is the name a client sends in the `model` field; a model
+  name in the listing says what is inside a route, it is not a name a client can send.
 - Streaming responses are copied chunk by chunk and flushed per chunk, so the bytes the
   upstream produced arrive as the bytes the client receives.
 - Structured logs, Prometheus metrics, health and readiness endpoints, SIGHUP reload,
@@ -112,28 +112,43 @@ A client asks for `demo`, which is a route name. The gateway picks a target, sen
 produced it. The model name in the response is the one the provider wrote, not the one
 the gateway chose.
 
-Because the model belongs to the target, one route name can be served by several
-different models:
+Because the model belongs to the target, a route name can be the level a client codes
+against while the config decides what answers it. A name such as `large`, `medium` or `small`
+is the ordinary form of that: the client says the tier, the operator chose which real models
+and providers sit behind it, and the balancing happens inside the name.
 
 ```yaml
 routes:
-  fast:
+  large:
     targets:
-      - name: via-a
-        model: provider/model-one
+      - name: provider-a
+        model: provider-a/big-model
         base_url: https://api.example.com/v1
         api_key_env: EXAMPLE_API_KEY_1
-      - name: via-b
-        model: provider/model-two
+      - name: provider-b
+        model: provider-b/huge-model
         base_url: https://api.other.example/v1
         api_key_env: EXAMPLE_API_KEY_2
 ```
 
-Which model answers is the model of the target that was picked, and `/v1/models` reports a
+Which model answers is the model of the target that was picked, and `/v1/models` reports the
 route name together with the distinct model names behind it:
 
 ```json
-{"id": "fast", "models": ["provider/model-one", "provider/model-two"], "targets": 2}
+{"id": "large", "models": ["provider-a/big-model", "provider-b/huge-model"], "targets": 2}
+```
+
+A name inside `models` is not a name a client can send. The listing reports what is inside a
+route; the sendable name is `id`. Because of that, the `model` field in a response for a tier
+name is not stable: one request may be answered by `provider-a/big-model` and the next by
+`provider-b/huge-model`. A client that needs to know which model answered reads it from the
+response, or from the log line for that request.
+
+When the route name is the model name, the abstraction is transparent and `models` is left out
+because it would only repeat the id:
+
+```json
+{"id": "qwen3:8b", "owned_by": "plainroute", "targets": 1}
 ```
 
 A name that is not a configured route is a 404 with `code: model_not_found`. Lookup

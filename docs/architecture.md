@@ -90,6 +90,14 @@ possible only while one name mapped to exactly one model. A target carries its o
 so the same model can sit behind several routes, and any rule for choosing between them would
 not be predictable from the config.
 
+**A route name is the level a client codes against.** A name such as `large` or `medium` is the
+ordinary form of it: the client names a tier, the configuration decides which model and which
+provider answer, and selection happens inside that name. That makes the listing report two
+different things, and only one of them is sendable. `id` is the name a client can send;
+`models` says what is inside the route. A model name in the listing is not a name a client can
+send, and for a tier name the `model` field in a response changes from request to request,
+because the response reports what the upstream wrote.
+
 **The first read happens before the response is committed.** If the upstream fails before
 sending a body, the client gets an error, not an empty 200. Once bytes are on the wire they
 cannot be taken back, which is also why a fallback only happens before the first byte.

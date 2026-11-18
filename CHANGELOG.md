@@ -29,7 +29,9 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
 - `/v1/models` reports route names, the distinct model names behind each one, and the target
   count. `aliased_of` is gone: a name can now stand for several models, so there is nothing
   for it to point at. When a route has one model and that model is the route name, `models`
-  is left out because it would only repeat the id.
+  is left out because it would only repeat the id. Only `id` is a name a client can send:
+  `models` says what is inside a route, and a route name is the level a client codes against,
+  so a model name in the listing is not a sendable name.
 - Lookup accepts route names only, so a request that names a model is a 404 with
   `code: model_not_found`. Looking up by upstream model name was possible only while one name
   mapped to exactly one model. A model can now sit behind several routes, and any rule for
