@@ -57,7 +57,7 @@ total() { grep -o '"total":[0-9]*' "$WORK/stats.json" | cut -d: -f2; }
 
 post() { # model, output file; prints the status code
   curl -s -o "$2" -w '%{http_code}' -H 'Content-Type: application/json' \
-    -d "{\"model\":\"$1\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"e2e\"}]}" \
+    -d "{\"model\":\"$1\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"prompt-zq\"}]}" \
     http://127.0.0.1:8080/v1/chat/completions
 }
 
@@ -209,7 +209,7 @@ stats
 before=$(total)
 status=$(curl -s -D "$WORK/headers.txt" -o "$WORK/cooled.txt" -w '%{http_code}' \
   -H 'Content-Type: application/json' \
-  -d '{"model":"allcooling","messages":[{"role":"user","content":"e2e"}]}' \
+  -d '{"model":"allcooling","messages":[{"role":"user","content":"prompt-zq"}]}' \
   http://127.0.0.1:8080/v1/chat/completions)
 stats
 check "status" "429" "$status"
@@ -246,11 +246,13 @@ has "the active counter came back to zero" 'plainroute_active_requests[[:space:]
 has "in flight is back to zero" 'plainroute_in_flight_requests[[:space:]]\+0' "$(cat "$WORK/bench.txt")"
 not_has "nothing panicked in the gateway" 'panic' "$(cat "$WORK/gateway.log")"
 not_has "no API key value appears in the gateway log" 'e2e-429' "$(cat "$WORK/gateway.log")"
-not_has "no prompt content appears in the gateway log" 'e2e"' "$(cat "$WORK/gateway.log")"
+# The prompt content uses letters that are not hex digits: a request id is hex, so a content string
+# that is hex-valid can appear inside one by chance, which made this check flaky.
+not_has "no prompt content appears in the gateway log" 'prompt-zq' "$(cat "$WORK/gateway.log")"
 
 printf '\n6. client disconnect: the upstream request is cancelled\n'
 curl -s --max-time 2 -o "$WORK/disconnect.txt" -H 'Content-Type: application/json' \
-  -d '{"model":"cancel","stream":true,"messages":[{"role":"user","content":"e2e"}]}' \
+  -d '{"model":"cancel","stream":true,"messages":[{"role":"user","content":"prompt-zq"}]}' \
   http://127.0.0.1:8080/v1/chat/completions > /dev/null
 sleep 1
 stats
@@ -280,14 +282,14 @@ sleep 1
 
 body_of() { # model
   curl -s -o "$WORK/gate-body.txt" -w '%{http_code}' -H 'Content-Type: application/json' \
-    -d "{\"model\":\"$1\",\"messages\":[{\"role\":\"user\",\"content\":\"e2e\"}]}" \
+    -d "{\"model\":\"$1\",\"messages\":[{\"role\":\"user\",\"content\":\"prompt-zq\"}]}" \
     http://127.0.0.1:8092/v1/chat/completions
 }
 
 check "nothing presented is rejected" "401" "$(body_of stream)"
 has "the error is the OpenAI shape with the api key code" '"code":"invalid_api_key"' "$(cat "$WORK/gate-body.txt")"
-check "a wrong key is rejected" "401" "$(curl -s -o "$WORK/gate-body.txt" -w '%{http_code}' -H 'Authorization: Bearer not-the-key' -H 'Content-Type: application/json' -d '{"model":"stream","messages":[{"role":"user","content":"e2e"}]}' http://127.0.0.1:8092/v1/chat/completions)"
-check "the configured key is served" "200" "$(curl -s -o "$WORK/gate-body.txt" -w '%{http_code}' -H 'Authorization: Bearer e2e-caller' -H 'Content-Type: application/json' -d '{"model":"stream","messages":[{"role":"user","content":"e2e"}]}' http://127.0.0.1:8092/v1/chat/completions)"
+check "a wrong key is rejected" "401" "$(curl -s -o "$WORK/gate-body.txt" -w '%{http_code}' -H 'Authorization: Bearer not-the-key' -H 'Content-Type: application/json' -d '{"model":"stream","messages":[{"role":"user","content":"prompt-zq"}]}' http://127.0.0.1:8092/v1/chat/completions)"
+check "the configured key is served" "200" "$(curl -s -o "$WORK/gate-body.txt" -w '%{http_code}' -H 'Authorization: Bearer e2e-caller' -H 'Content-Type: application/json' -d '{"model":"stream","messages":[{"role":"user","content":"prompt-zq"}]}' http://127.0.0.1:8092/v1/chat/completions)"
 has "the upstream key was used, not the caller key" '[DONE]' "$(cat "$WORK/gate-body.txt")"
 stats
 c=$(count e2e-caller)
