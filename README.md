@@ -401,6 +401,39 @@ auth:
   configured for the selected target, so a client cannot aim a request at a key it
   was not given.
 
+## What a request carries through
+
+The gateway reads two fields out of the body — `model` and `stream` — and forwards the
+body as the bytes it received. Everything else is passed because it is passed as bytes, not
+because it is understood. `temperature`, `max_tokens`, a tool choice, a field this project
+does not know: whatever the client put in the body arrives, in the order the client wrote
+it, with the numbers as the client wrote them. The only change is the bytes of the `model`
+value.
+
+What does not pass:
+
+- The client's URL path is not used. The upstream URL is the target's base URL plus the
+  target's `path`, default `/chat/completions`, so two targets can answer the same route at
+  two different endpoints.
+- The client's query string is not forwarded.
+- The method is always POST.
+- A compressed request body is not decompressed. A gzip body is rejected as `invalid_json`,
+  because the gateway requires JSON text, and what it forwards is what it read.
+- Hop-by-hop headers, `Content-Length` and `Host` on the request. `Content-Length` is set by
+  the transport, because the forwarded body is not the length the client counted.
+- On the response, the per-connection headers, and `Content-Length` is left to the transport
+  so a stream that ended early is not described by a length that is wrong.
+
+What is replaced rather than copied: `Authorization` becomes the key configured for the
+selected target, per-target `headers` override what the client sent for the same name, and
+`X-Request-Id` is the id the gateway generated — or the client's own value, when the client
+sent one and it was 128 characters or shorter.
+
+Checked against a real run, not against the reading of the code: a request with
+`Cookie`, `X-Forwarded-For`, `Accept-Encoding: gzip`, `Connection: close` and an
+`Authorization` header reached the upstream with the first two dropped by the deny list, the
+caller key replaced, and the rest of the header set intact.
+
 ## Why retry is off by default
 
 A gateway that retries changes the meaning of a request. One client request becomes two,
