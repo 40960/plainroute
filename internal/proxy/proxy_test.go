@@ -44,6 +44,10 @@ type harness struct {
 	t       *testing.T
 	gateway *httptest.Server
 	fake    *fakeupstream.Server
+	// fakeURL is the address the fake upstream is listening on, so a test that builds a second
+	// configuration — the one a reload swaps in — can point its targets at the same upstream. The
+	// placeholder in the config text is only a stand-in for this address.
+	fakeURL string
 	handler *Handler
 	metrics *metrics.Metrics
 	log     *bytes.Buffer
@@ -77,7 +81,20 @@ func newHarness(t *testing.T, cfgText string) *harness {
 	gateway := httptest.NewServer(handler)
 	t.Cleanup(gateway.Close)
 
-	return &harness{t: t, gateway: gateway, fake: fake, handler: handler, metrics: m, log: logBuf, clock: clock}
+	return &harness{t: t, gateway: gateway, fake: fake, fakeURL: fakeServer.URL, handler: handler, metrics: m, log: logBuf, clock: clock}
+}
+
+// parseAt is Parse with the placeholder replaced by the address the fake upstream is listening on,
+// which is the same thing newHarness does for the config a handler starts with. A reload config built
+// with the placeholder would point at a name that cannot resolve, and the test would measure nothing.
+func (h *harness) parseAt(text string) *config.Config {
+	h.t.Helper()
+
+	cfg, err := config.Parse([]byte(strings.Replace(text, "https://fake.invalid/v1", h.fakeURL+"/v1", 1)))
+	if err != nil {
+		h.t.Fatalf("config: %v", err)
+	}
+	return cfg
 }
 
 func (h *harness) post(body string) (*http.Response, string) {
