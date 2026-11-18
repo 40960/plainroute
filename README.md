@@ -116,6 +116,19 @@ ends with a summary.
 Keys are read from the environment. Nothing that looks like a secret belongs in a config
 file, and the gateway never writes a key into a log line.
 
+A key is resolved when the config is read and held in memory after that. `api_key_env` is the
+name of a variable, never the value, so a key written into a YAML field is not a shape this
+project accepts: a key in a file is a key in git, in an image layer, and in a PR diff. A
+process sees the environment it was started with, so a `SIGHUP` reload re-reads the same
+values, and changing a key means starting a new process. In a container the environment is
+fixed when the container is created, so a changed `.env` file needs a new container.
+
+The config can reference the environment anywhere with `${NAME}` or `${NAME:-default}`, and an
+unset reference without a default stops the process. For a key that does not help: `api_key_env`
+is looked up as a name, so `${MISSING_KEY:-sk-example}` is read as a variable called
+`sk-example`, which is not set, and the config is rejected. A key value can only come from the
+environment.
+
 ## How one request works
 
 PlainRoute is a messenger, not a chef. The body it received goes out, and the answer
