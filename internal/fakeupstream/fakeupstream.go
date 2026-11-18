@@ -7,7 +7,8 @@
 // identifies a target. A sequence of behaviours can be configured per key, so
 // a test can say: first request 429, second request 200. The server counts every
 // request it sees, which is how the tests prove that client requests and upstream
-// attempts are the same number.
+// attempts are the same number, and it keeps the last request it saw per key, which
+// is how a check can tell what the gateway forwarded from what it dropped.
 package fakeupstream
 
 import (
@@ -75,12 +76,31 @@ type fileBehavior struct {
 	Sequence      []fileBehavior    `json:"sequence,omitempty"`
 }
 
+// Received is what the fake upstream saw on the last request for one key. Every field is
+// stored as it arrived, because a check that compares what the gateway forwarded has to
+// compare bytes, not a rebuilt copy: a normalised copy would hide exactly the things these
+// checks are for.
+type Received struct {
+	Method  string
+	Path    string
+	Query   string
+	Headers map[string]string
+
+	// ContentLength is the number the transport framed the request with, kept apart from the
+	// header map because the server moves it out of the header map into this field. A check
+	// that compares the length the upstream was told against the body that arrived needs the
+	// number, not a copy of a header.
+	ContentLength int64
+
+	Body string
+}
+
 // Server is a fake OpenAI-compatible upstream.
 type Server struct {
 	mu        sync.Mutex
 	behaviors map[string]*Behavior
 	attempts  map[string]int
-	lastBody  map[string]string
+	received  map[string]Received
 	total     int
 }
 
@@ -88,7 +108,7 @@ func New() *Server {
 	return &Server{
 		behaviors: map[string]*Behavior{},
 		attempts:  map[string]int{},
-		lastBody:  map[string]string{},
+		received:  map[string]Received{},
 	}
 }
 
@@ -118,7 +138,58 @@ func (s *Server) TotalAttempts() int {
 func (s *Server) LastBody(key string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.lastBody[key]
+	return s.received[key].Body
+}
+
+// Last is the whole request the fake upstream received for a key, so a check can tell
+// what was forwarded from what was dropped.
+func (s *Server) Last(key string) Received {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.received[key]
+}
+
+// LastText is the received request as one line per fact, which is the shape the end-to-end
+// script reads. It is text rather than JSON because these checks compare bytes: a JSON string
+// would escape the quotes inside a request body, so a check would be comparing an escaped copy
+// of the bytes it claims to compare.
+func (s *Server) LastText(key string) string {
+	r := s.Last(key)
+	if r.Method == "" {
+		return fmt.Sprintf("key=%s\nnothing was received for this key\n", key)
+	}
+
+	lines := []string{
+		"key=" + key,
+		"method=" + r.Method,
+		"path=" + r.Path,
+		"query=" + r.Query,
+		fmt.Sprintf("content_length=%d", r.ContentLength),
+	}
+	for _, name := range sortedStrings(keysOf(r.Headers)) {
+		lines = append(lines, "header."+name+"="+r.Headers[name])
+	}
+	return strings.Join(append(lines, "body="+r.Body), "\n") + "\n"
+}
+
+func keysOf(in map[string]string) []string {
+	out := make([]string, 0, len(in))
+	for name := range in {
+		out = append(out, name)
+	}
+	return out
+}
+
+// headerValues is the header set as it arrived, with values joined because a repeated header
+// is one line in this output. Names are canonicalised so a check can name a header without
+// knowing how the client spelled it; Go's own reader already canonicalises, so this only
+// matters for a client that sends a name in another spelling.
+func headerValues(src http.Header) map[string]string {
+	out := make(map[string]string, len(src))
+	for name, values := range src {
+		out[http.CanonicalHeaderKey(name)] = strings.Join(values, ", ")
+	}
+	return out
 }
 
 // Cancelled reports whether a request for this key was cancelled while the fake
@@ -231,6 +302,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/last" {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, s.LastText(r.URL.Query().Get("key")))
+		return
+	}
+
 	if r.URL.Path == "/v1/models" {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"object":"list","data":[]}`)
@@ -271,7 +348,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	s.lastBody[key] = string(body)
+	s.received[key] = Received{
+		Method:        r.Method,
+		Path:          r.URL.Path,
+		Query:         r.URL.RawQuery,
+		Headers:       headerValues(r.Header),
+		ContentLength: r.ContentLength,
+		Body:          string(body),
+	}
 	s.mu.Unlock()
 
 	if behavior.Delay > 0 {

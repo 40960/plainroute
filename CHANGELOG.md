@@ -125,8 +125,10 @@ the end-to-end script.
 
 ### Tools
 
-- `cmd/fakeupstream`: controllable upstream keyed by API key value, with per-key sequences
-  and a `/stats` endpoint that reports what the server saw.
+- `cmd/fakeupstream`: controllable upstream keyed by API key value, with per-key sequences,
+  a `/stats` endpoint that reports what the server saw, and `/last?key=` for the last request
+  it received for one key, as one line per fact. That is the shape a script greps when it has
+  to tell what the gateway forwarded from what it dropped.
 - `cmd/bench`: load generator that measures what the client sees and then reads the gateway's
   own counters, failing when upstream attempts exceed client requests or when a gauge is
   still non-zero after the load stopped.

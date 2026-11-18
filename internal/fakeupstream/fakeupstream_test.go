@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -262,5 +264,127 @@ func TestCancelIsRecordedForAStreamStillOpen(t *testing.T) {
 	}
 	if body["model"] != "m" {
 		t.Errorf("the received body does not report the model: %s", fake.LastBody("test-key"))
+	}
+}
+
+// TestReceivedRecordsTheRequestAsItArrived is the basis for every request-path check in the
+// end-to-end script. If the record normalised what arrived, a check could not tell a byte the
+// gateway forwarded from a byte the record rebuilt, and a check that a header was dropped would
+// be comparing a shape rather than what came over the wire.
+func TestReceivedRecordsTheRequestAsItArrived(t *testing.T) {
+	fake := New()
+	server := httptest.NewServer(fake)
+	defer server.Close()
+
+	// Spaces are part of the bytes, so a record that normalised whitespace would show up here.
+	const body = `{"model":"m", "zq_unknown":{"kept":true}, "temperature":0.5}`
+
+	req, err := http.NewRequest(http.MethodPost,
+		server.URL+"/v1/chat/completions?zq_query=1", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("x-zq-Header", "as sent")
+	req.Header.Add("x-zq-multi", "one")
+	req.Header.Add("x-zq-multi", "two")
+
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+
+	got := fake.Last("test-key")
+	if got.Method != http.MethodPost {
+		t.Errorf("method: got %q, want POST", got.Method)
+	}
+	if got.Path != "/v1/chat/completions" {
+		t.Errorf("path: got %q", got.Path)
+	}
+	if got.Query != "zq_query=1" {
+		t.Errorf("query: got %q, want zq_query=1", got.Query)
+	}
+	if got.Body != body {
+		t.Errorf("body was not stored as the bytes it arrived: got %q", got.Body)
+	}
+	if got.ContentLength != int64(len(body)) {
+		t.Errorf("content length: got %d, want %d", got.ContentLength, len(body))
+	}
+	if got.Headers["X-Zq-Header"] != "as sent" {
+		t.Errorf("header value: got %q, want as sent", got.Headers["X-Zq-Header"])
+	}
+	if got.Headers["X-Zq-Multi"] != "one, two" {
+		t.Errorf("repeated header: got %q, want one, two", got.Headers["X-Zq-Multi"])
+	}
+
+	// The recorded length is the number the sender framed the request with, not a copy of the
+	// body length: a chunked request has no Content-Length, so the number stays -1 while the
+	// body bytes are still recorded. The script's length check compares what the upstream was
+	// told against what it received, so this has to be the framing and not a derived number.
+	chunkedBody := `{"model":"zq-chunked","stream":false}`
+	chunked, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions",
+		io.NopCloser(strings.NewReader(chunkedBody)))
+	if err != nil {
+		t.Fatalf("new chunked request: %v", err)
+	}
+	chunked.ContentLength = -1
+	chunked.Header.Set("Authorization", "Bearer zq-chunked")
+
+	resp, err = server.Client().Do(chunked)
+	if err != nil {
+		t.Fatalf("chunked request: %v", err)
+	}
+	resp.Body.Close()
+
+	stored := fake.Last("zq-chunked")
+	if stored.ContentLength != -1 {
+		t.Errorf("content length for a chunked request: got %d, want -1", stored.ContentLength)
+	}
+	if stored.Body != chunkedBody {
+		t.Errorf("body for a chunked request: got %q", stored.Body)
+	}
+
+	// The text form is what the script greps, so the wiring is the thing being checked here:
+	// the route, the key taken from the query, and the body printed as one line.
+	resp, err = server.Client().Get(server.URL + "/last?key=test-key")
+	if err != nil {
+		t.Fatalf("read the text form: %v", err)
+	}
+	data, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read the text form: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"key=test-key",
+		"path=/v1/chat/completions",
+		"query=zq_query=1",
+		"content_length=" + strconv.Itoa(len(body)),
+		"header.X-Zq-Header=as sent",
+		"header.X-Zq-Multi=one, two",
+		"body=" + body,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the text form is missing %q: %s", want, text)
+		}
+	}
+
+	var headerLines []string
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "header.") {
+			headerLines = append(headerLines, line)
+		}
+	}
+	if len(headerLines) < 2 || !sort.StringsAreSorted(headerLines) {
+		t.Errorf("header lines must come out in a fixed order so a check is reproducible: %v",
+			headerLines)
+	}
+
+	// A key that was never sent has to say so, otherwise a check for an absent header passes
+	// because the record is empty instead of because the header was dropped.
+	if !strings.Contains(fake.LastText("never-sent"), "nothing was received") {
+		t.Error("an unknown key must report that nothing arrived")
 	}
 }

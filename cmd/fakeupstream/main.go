@@ -6,7 +6,9 @@
 // Behaviour comes from the API key the gateway presents, because a key is what
 // identifies a target, or from the path part of the target base URL, which is
 // how the script checks one case at a time. GET /stats reports what the server saw, so
-// a script can check that client requests and upstream attempts are the same number.
+// a script can check that client requests and upstream attempts are the same number, and
+// GET /last?key= reports the last request received for one key as one line per fact, which
+// is what a script greps when it needs to know what the gateway forwarded.
 package main
 
 import (
@@ -37,8 +39,8 @@ func main() {
 		}
 	}
 
-	fmt.Printf("fakeupstream on http://%s: %d keyed behaviours, named paths, stats at /stats\n",
-		*listen, configured)
+	fmt.Printf("fakeupstream on http://%s: %d keyed behaviours, named paths, stats at /stats, "+
+		"the last request for a key at /last?key=\n", *listen, configured)
 
 	if err := http.ListenAndServe(*listen, server); err != nil {
 		fmt.Fprintf(os.Stderr, "fakeupstream: %v\n", err)
