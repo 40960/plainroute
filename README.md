@@ -34,7 +34,11 @@ endorsement or an affiliation.
 - Per-target cooldown: for an error status the window is
   `routing.cooldown.status[<code>]` when the upstream did not send a `Retry-After`, and
   the value the upstream sent when it did, clamped by `routing.cooldown.max`, which 0
-  turns off. A status with no entry, or an entry of 0, does not cool a target down.
+- Per-target cooldown: for an error status the window is
+  `routing.cooldown.status[<code>]` when the upstream did not send a `Retry-After`, and
+  the value the upstream sent when it did, clamped by `routing.cooldown.max`, which 0
+  turns off. A status with no entry, or an entry of 0, does not cool a target down, and
+  the map a file leaves out is `429: 10s` alone.
 - Model name mapping: the model name comes from the target that was picked, and the
   `model` field in the request body is the only field PlainRoute changes. It changes by
   splicing bytes into the original document rather than re-serialising it.
@@ -300,8 +304,7 @@ routing:
     status:
       429: 10s
       401: 60s
-      503: 15s
-    max: 5m                    # clamps a Retry-After; 0 turns the clamp off
+    max: 30s                    # clamps a Retry-After; 0 turns the clamp off
     timeout: 30s                  # 0 disables cooling after a connection failure
 
 routes:
@@ -401,6 +404,20 @@ auth:
   narrowest band a default can cover, and it is long enough that the same key is not asked again
   on every request. For a key that was told to slow down, the window is also the interval at
   which that key is asked again.
+- The default map is `429` alone, because a window names a target, and a code belongs in
+  the map only when it says something about that target. A 401 or a 403 says this
+  target's credential is the problem, so holding that target out is the whole state
+  there is: nothing here marks a key as permanently disabled, so a held-out key is asked
+  again when the window ends. A 503 normally says the service behind the key is
+  temporarily unavailable, which is not a property of the key, so a window on 503 would
+  hold a working key out for a failure that may not belong to it, and nothing here
+  counts consecutive failures, so it cannot tell a transient 503 from a broken target.
+  Write a window for 503 only when you know your provider means the key. Taking it out
+  of the map does not ignore a provider that names a window: the map is the prior for
+  the silent case, and a `Retry-After` carried by a 503 still wins. Checked both ways on
+  one target: a 503 with no `Retry-After` left the target selectable and the next
+  request reached the upstream, while the same 503 with `Retry-After: 2` answered the
+  next request from gateway state with no upstream call.
 - A bigger cooldown value does not mean fewer upstream requests. One client request is one
   upstream attempt whenever a target is selectable, so a bigger window only moves answers from
   the provider to the gateway. Fewer requests come from the client backing off, or from setting

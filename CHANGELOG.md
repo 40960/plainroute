@@ -58,6 +58,18 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   unverified value can govern before the target is asked again; the default is chosen so
   it fires only on a value that cannot be true.
 
+- The example config no longer writes a window for 503, and the generator writes `503:
+  0s`. The core default map is `429` alone and did not change, because a window names a
+  target, and a code belongs in the map only when it says something about that target. A
+  401 or a 403 says the credential is the problem; a 503 normally says the service
+  behind the credential is temporarily unavailable, so a window on 503 holds a working
+  key out of the pool for a failure that may not belong to it, and nothing in PlainRoute
+  counts consecutive failures, so it cannot tell a transient 503 from a broken target.
+  What the provider says is still honoured: the map is the prior for the silent case
+  only, and a `Retry-After` carried by a 503 still wins. Checked with one target both
+  ways, by the end-to-end script and by a test that writes no cooldown map at all, so
+  what it reads is the code default.
+
 ### Fixes
 
 - `plainroute_upstream_errors_total` help text named `status`, which that collector can never

@@ -30,14 +30,25 @@ routing:
   # so a selection is reproducible instead of random.
   strategy: least_active
   cooldown:
+    # A window names a target, so a code belongs in the map only when it says something
+    # about that target. A 401 or a 403 says this target's credential is the problem, and
+    # holding the target out for a while is the whole state there is: PlainRoute has no
+    # "this key is disabled" state, so a held-out key is asked again when the window ends.
+    #
+    # 503 is not in the core default map, and it is not written here. A 503 normally says
+    # the service behind the key is temporarily unavailable, which is not a property of the
+    # key, so a window on 503 holds a working key out for a failure that may not belong to
+    # it. PlainRoute does not count consecutive failures, so it cannot tell a transient 503
+    # from a broken target and should not pretend to. Write a window for 503 only when you
+    # know your provider means the key, and 0 means no window, which is the same as leaving
+    # the entry out.
     status:
       429: 10s
       401: 60s
       403: 60s
-      503: 15s
     # The clamp applies to the value the upstream sent, not to a configured duration.
     # 0 turns the clamp off, so a value from the upstream is used as written; absent
-    # means this default. A negative value is an error.
+    # means this default, which is the core default of 15m. A negative value is an error.
     max: 15m
     timeout: 0s      # cools a target after a connection or idle failure; 0 disables
 

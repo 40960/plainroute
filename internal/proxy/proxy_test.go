@@ -331,6 +331,157 @@ routing:
 	}
 }
 
+// Test503IsNotInTheDefaultCooldownMap writes no cooldown section at all, so what it reads is
+// the map the code defaults to rather than a map the test set up. 429 alone is the default,
+// because a window names a target and a 503 normally says something about the service behind a
+// key, not about the key. The response still has to reach the client as the upstream produced
+// it, the target has to stay selectable, and one client request must stay one upstream attempt.
+func Test503IsNotInTheDefaultCooldownMap(t *testing.T) {
+	h := newHarness(t, `
+routes:
+  m:
+    targets:
+      - name: a
+        model: m
+        base_url: https://fake.invalid/v1
+        api_key_env: KEY_A
+`, config.Env{"KEY_A": "key-a"})
+
+	upstream := `{"error":{"message":"content safety screening is temporarily unavailable"}}`
+	h.fake.Set("key-a", fakeupstream.Behavior{Status: 503, Body: upstream})
+
+	resp, out := h.post(chatBody("m"))
+	if resp.StatusCode != 503 {
+		t.Fatalf("status: got %d, want 503: a transient service failure must reach the client as it arrived", resp.StatusCode)
+	}
+	if out != upstream {
+		t.Errorf("error body was rewritten: got %q, want %q", out, upstream)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "" {
+		t.Errorf("Retry-After: got %q, want none because no window was applied", got)
+	}
+	if h.fake.Attempts("key-a") != 1 {
+		t.Errorf("attempts: got %d, want 1: the gateway retried inside one request", h.fake.Attempts("key-a"))
+	}
+	if strings.Contains(h.log.String(), "cooldown") {
+		t.Errorf("a 503 cooled the target down: %s", h.log.String())
+	}
+
+	// The second request is what makes this falsifiable: the first reaches the upstream
+	// whatever the code does with the map, so only a request answered by a cooled target can
+	// show that the target was or was not taken out of the pool.
+	resp, out = h.post(chatBody("m"))
+	if resp.StatusCode != 503 {
+		t.Fatalf("second request: got %d, want 503 from the upstream, not from gateway state", resp.StatusCode)
+	}
+	if out != upstream {
+		t.Errorf("second response body: got %q, want the upstream body again", out)
+	}
+	if h.fake.Attempts("key-a") != 2 {
+		t.Errorf("the target was not selectable after a 503: %d attempts", h.fake.Attempts("key-a"))
+	}
+	if got := testutil.ToFloat64(h.metrics.CooldownEvents.WithLabelValues("m", "a", "Service Unavailable")); got != 0 {
+		t.Errorf("cooldown_events_total: got %v, want 0", got)
+	}
+}
+
+// TestZeroEntryMeansNoWindowFor503 is the same rule read from the file: an entry of 0 is not a
+// window, so a generated config that writes 503: 0s behaves as if the entry were absent. The
+// bug this guards against is a fallback that treats 0 as "nothing configured" and uses the
+// default instead, which would make writing 0s mean something other than what it says.
+func TestZeroEntryMeansNoWindowFor503(t *testing.T) {
+	h := newHarness(t, `
+routes:
+  m:
+    targets:
+      - name: a
+        model: m
+        base_url: https://fake.invalid/v1
+        api_key_env: KEY_A
+routing:
+  cooldown:
+    status: {429: 10s, 503: 0s}
+    max: 30s
+`, config.Env{"KEY_A": "key-a"})
+
+	h.fake.Set("key-a", fakeupstream.Behavior{Status: 503,
+		Body: `{"error":{"message":"content safety screening is temporarily unavailable"}}`})
+
+	resp, out := h.post(chatBody("m"))
+	if resp.StatusCode != 503 {
+		t.Fatalf("status: got %d, want 503", resp.StatusCode)
+	}
+	if !strings.Contains(out, "content safety") {
+		t.Errorf("error body not forwarded: %s", out)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "" {
+		t.Errorf("Retry-After: got %q, want none for an entry of 0", got)
+	}
+
+	resp, _ = h.post(chatBody("m"))
+	if resp.StatusCode != 503 {
+		t.Fatalf("second request: got %d, want 503 from the upstream", resp.StatusCode)
+	}
+	if h.fake.Attempts("key-a") != 2 {
+		t.Errorf("a 0 entry took the target out of the pool: %d attempts", h.fake.Attempts("key-a"))
+	}
+}
+
+// TestUnmappedStatusStillHonoursAnUpstreamRetryAfter is the half that taking 503 out of the map
+// does not change: the map only supplies the prior for the silent case. A 503 that names a
+// window is a provider that said how long to wait, so that window applies, the client is told
+// the same number, and the request that lands inside it is answered from gateway state with no
+// upstream call.
+func TestUnmappedStatusStillHonoursAnUpstreamRetryAfter(t *testing.T) {
+	h := newHarness(t, `
+routes:
+  m:
+    targets:
+      - name: a
+        model: m
+        base_url: https://fake.invalid/v1
+        api_key_env: KEY_A
+routing:
+  cooldown:
+    max: 30s
+`, config.Env{"KEY_A": "key-a"})
+
+	h.fake.Set("key-a", fakeupstream.Behavior{Status: 503,
+		Headers: map[string]string{"Retry-After": "2"},
+		Body:    `{"error":{"message":"content safety screening is temporarily unavailable"}}`})
+
+	resp, out := h.post(chatBody("m"))
+	if resp.StatusCode != 503 {
+		t.Fatalf("status: got %d, want 503", resp.StatusCode)
+	}
+	if !strings.Contains(out, "content safety") {
+		t.Errorf("error body not forwarded: %s", out)
+	}
+	if resp.Header.Get("Retry-After") != "2" {
+		t.Errorf("Retry-After: got %q, want 2 as the upstream sent it", resp.Header.Get("Retry-After"))
+	}
+	if h.fake.Attempts("key-a") != 1 {
+		t.Errorf("attempts: got %d, want 1", h.fake.Attempts("key-a"))
+	}
+
+	resp, out = h.post(chatBody("m"))
+	if resp.StatusCode != 429 {
+		t.Fatalf("second request: got %d, want 429 answered from state", resp.StatusCode)
+	}
+	if !strings.Contains(out, "all_targets_cooling_down") {
+		t.Errorf("the answer is not the one gateway state gives: %s", out)
+	}
+	if h.fake.Attempts("key-a") != 1 {
+		t.Errorf("the cooled target was contacted again: %d attempts", h.fake.Attempts("key-a"))
+	}
+
+	h.clock.Advance(2 * time.Second)
+	h.post(chatBody("m"))
+	if h.fake.Attempts("key-a") != 2 {
+		t.Errorf("the target should be selectable at the boundary: %d attempts", h.fake.Attempts("key-a"))
+	}
+}
+
 func TestInvalidRetryAfterFallsBackToConfiguredCooldown(t *testing.T) {
 	h := newHarness(t, `
 routes:

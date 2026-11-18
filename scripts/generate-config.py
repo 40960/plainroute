@@ -62,7 +62,11 @@ routing:
       429: {cooldown_429}
       401: 60s
       403: 60s
-      503: 15s
+      # 0 means no window: a 503 normally says the service behind the key is temporarily
+      # unavailable, not that this key is broken. PlainRoute does not count consecutive
+      # failures, so a window here would hold a working key out for a failure that may not
+      # belong to it. Write a window here only when you know your provider means the key.
+      503: 0s
     max: 5m
     timeout: 0s
 

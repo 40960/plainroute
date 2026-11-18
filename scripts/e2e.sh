@@ -167,6 +167,10 @@ cat > "$WORK/behaviors.json" <<'JSON'
   "e2e-500": {
     "status": 500,
     "body": "{\"error\":{\"message\":\"server error\",\"type\":\"server_error\"}}"
+  },
+  "e2e-503": {
+    "status": 503,
+    "body": "{\"error\":{\"message\":\"content safety screening is temporarily unavailable\"}}"
   }
 }
 JSON
@@ -177,7 +181,9 @@ server:
 routing:
   strategy: least_active
   cooldown:
-    status: {429: 10s}
+    # No status map is written here, so the map in force is the one the code defaults to: 429
+    # alone. Case 13 is a check about that default, so a map written here would check this
+    # script's own choice instead of the behaviour a new user gets from the code.
     max: 60s
 headers:
   mode: deny
@@ -283,10 +289,17 @@ routes:
         model: unmapped
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_500
+  safety503:
+    targets:
+      - name: service-level-503
+        model: safety503
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_503
 YAML
 
 export E2E_STREAM=e2e-stream E2E_429=e2e-429 E2E_TOOL=e2e-tool E2E_CANCEL=e2e-cancel
 export E2E_PLAIN=e2e-plain E2E_GZIP=e2e-gzip E2E_ALLOW=e2e-allow E2E_500=e2e-500
+export E2E_503=e2e-503
 export E2E_RAFAR=e2e-rafar E2E_RAFAR_2=e2e-rafar-2
 for i in 1 2 3 4 5 6 7 8; do export "E2E_DIST_$i=e2e-dist-$i"; done
 
@@ -810,6 +823,49 @@ check "the gateway is still serving after a failed reload" "ok" \
   "$(curl -s http://127.0.0.1:8080/healthz)"
 check "a route from the file that failed to load is not in use, so the running config survived" \
   "404" "$(post_to 8080 newroute /dev/null)"
+
+printf '\n13. a 503 is answered as the upstream answered it, and does not cool the target\n'
+# The config this run uses writes no status map, so the map in force is the code default: 429
+# alone. A window names a target, and a 503 normally says something about the service behind a
+# key rather than about the key, so a window on 503 would hold a working key out of the pool for
+# a failure that may not belong to it. The second request is what makes this falsifiable: the
+# first reaches the upstream whatever the code does with the map, so only a target that was taken
+# out of the pool can answer the second one differently.
+# Written without a trailing newline: the upstream body has none, so a byte comparison here has
+# to compare the same bytes, and a heredoc would add one.
+printf '%s' '{"error":{"message":"content safety screening is temporarily unavailable"}}' > "$WORK/expected503.txt"
+
+stats
+before=$(total)
+status=$(curl -s -D "$WORK/h6.txt" -o "$WORK/g1.txt" -w '%{http_code}' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"safety503","messages":[{"role":"user","content":"prompt-zq"}]}' \
+  http://127.0.0.1:8080/v1/chat/completions)
+check "the 503 reaches the client as the upstream answered it" "503" "$status"
+if cmp -s "$WORK/g1.txt" "$WORK/expected503.txt"; then
+  CHECKS=$((CHECKS + 1)); pass "and the body is the upstream body, not a gateway error"
+else
+  CHECKS=$((CHECKS + 1)); fail "the body changed: $(cat "$WORK/g1.txt")"
+fi
+stats
+check "and one client request was one upstream attempt" "$((before + 1))" "$(total)"
+check "so no window is claimed with it" "" "$(grep -i 'retry-after' "$WORK/h6.txt")"
+not_has "and the gateway did not take that target out of the pool" 'cooldown.*safety503' \
+  "$(cat "$WORK/gateway.log")"
+
+stats
+before=$(count e2e-503)
+status=$(post_to 8080 safety503 "$WORK/g2.txt")
+stats
+check "the next request reached the same target, which is what selectable means" \
+  "$((before + 1))" "$(count e2e-503)"
+check "and it was answered by the upstream again, not by gateway state" "503" "$status"
+
+# The rule about the default map is also a rule about the files a new user copies, so the files
+# are checked: a rule the shipped example contradicts is not the rule a reader gets.
+not_has "the example config does not recommend a window for 503" '^[ ]*503:' \
+  "$(cat "$ROOT/config.example.yaml")"
+not_has "and the README example does not show one either" '^[ ]*503:' "$(cat "$ROOT/README.md")"
 
 printf '\n%d checks: %s\n' "$CHECKS" "$([ "$FAIL" = 0 ] && echo 'all passed' || echo 'failures')"
 exit "$FAIL"
