@@ -37,7 +37,7 @@ type outcome struct {
 func (h *Handler) attempt(
 	w http.ResponseWriter,
 	r *http.Request,
-	cfg *config.Config,
+	g *generation,
 	pool *routing.Pool,
 	t *routing.Target,
 	body []byte,
@@ -46,6 +46,9 @@ func (h *Handler) attempt(
 	start time.Time,
 	allowFallback bool,
 ) outcome {
+	// The generation this request started with, kept for the whole attempt.
+	cfg := g.cfg
+
 	defer pool.Release(t)
 
 	// Being selectable means this target is not cooling down, so clear its
@@ -94,7 +97,7 @@ func (h *Handler) attempt(
 	copyRequestHeaders(req.Header, r.Header, cfg, t, id)
 
 	sendStart := h.now()
-	res, err := h.client.Do(req)
+	res, err := g.client.Do(req)
 	if err != nil {
 		return h.reportTransportFailure(w, r, idleCtx, idleFired, cfg, pool, t, id, allowFallback, err)
 	}

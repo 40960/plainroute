@@ -66,8 +66,22 @@ type Config struct {
 	Headers  HeadersConfig          `yaml:"headers"`
 	Logging  LoggingConfig          `yaml:"logging"`
 	Metrics  MetricsConfig          `yaml:"metrics"`
+	Reload   ReloadConfig           `yaml:"config_reload"`
 	Auth     AuthConfig             `yaml:"auth"`
 	Routes   map[string]RouteConfig `yaml:"routes"`
+}
+
+// ReloadConfig is the watcher: how often the file is read and compared against the hash of what was
+// last acted on. There is no switch to turn this off, because keeping the last good config is what
+// makes an operator editing a live file safe, and the interval is the only number here.
+//
+// One second is the default, and it is what the README states: this is an operator config, not a
+// control plane, so a document that promised a change lands instantly would be a promise this code
+// cannot keep. 0 or absent means the default. A value under 100ms is a startup error rather than a
+// silent clamp, because a file that says 1ms and runs as a busy loop is exactly the mistake this
+// guard exists for.
+type ReloadConfig struct {
+	Interval Duration `yaml:"interval"`
 }
 
 // AuthConfig is the api key a caller presents. It is a single value, not a table of keys: a
@@ -323,8 +337,20 @@ func applyDefaults(cfg *Config) {
 	if cfg.Metrics.Path == "" {
 		cfg.Metrics.Path = "/metrics"
 	}
+	if cfg.Reload.Interval == 0 {
+		cfg.Reload.Interval = DefaultReloadInterval()
+	}
 }
 
+// DefaultReloadInterval is what the file gets when nothing is written: one second. Reading a few
+// kilobytes once a second is not a cost worth measuring, and it is the bound a reader can rely on
+// when the README says a change shows up within one interval.
+func DefaultReloadInterval() Duration { return Duration(time.Second) }
+
+// MinReloadInterval is the floor a configured value has to clear.
+func MinReloadInterval() Duration { return Duration(100 * time.Millisecond) }
+
+// validate reports every problem at once, so a startup failure is actionable.
 func validate(cfg *Config) error {
 	var problems []string
 
@@ -394,6 +420,12 @@ func validate(cfg *Config) error {
 	}
 	if !strings.HasPrefix(cfg.Metrics.Path, "/") {
 		problems = append(problems, "metrics.path must start with /")
+	}
+	if cfg.Reload.Interval < 0 {
+		problems = append(problems, "config_reload.interval must be positive, or 0 for the default")
+	} else if cfg.Reload.Interval > 0 && cfg.Reload.Interval < MinReloadInterval() {
+		problems = append(problems,
+			fmt.Sprintf("config_reload.interval must be %s or more, or 0 for the default, so the watcher is not a busy loop", MinReloadInterval()))
 	}
 
 	if len(cfg.Routes) == 0 {

@@ -22,6 +22,7 @@ import (
 	"github.com/40960/plainroute/internal/logging"
 	"github.com/40960/plainroute/internal/metrics"
 	"github.com/40960/plainroute/internal/proxy"
+	"github.com/40960/plainroute/internal/reload"
 	"github.com/40960/plainroute/internal/routing"
 )
 
@@ -37,7 +38,17 @@ func main() {
 		return
 	}
 
-	cfg, err := config.Load(*cfgPath)
+	// Startup is the one place a bad file is fatal, because before the first configuration there is no
+	// last-known-good one to serve with: a missing, unreadable or invalid file is a startup failure
+	// and the process does not listen. Reading the bytes here, rather than calling Load, is what lets
+	// the watcher be seeded with the content that was validated, so the first look at the file is not
+	// counted as a reload of something nobody changed.
+	data, err := os.ReadFile(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "plainroute: read config: %v\n", err)
+		os.Exit(1)
+	}
+	cfg, err := config.Parse(data)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "plainroute: %v\n", err)
 		os.Exit(1)
@@ -46,6 +57,9 @@ func main() {
 	log := logging.New(cfg.Logging, os.Stderr)
 	m := metrics.New()
 	handler := proxy.New(cfg, m, log, routing.NewStateStore(), time.Now)
+
+	watcher := reload.New(*cfgPath, cfg.Reload.Interval.Std(), log, m, handler.Reload)
+	watcher.Seed(data)
 
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,
@@ -87,6 +101,7 @@ func main() {
 		"version", version,
 		"gate", gate,
 		"config", *cfgPath,
+		"reload_interval", cfg.Reload.Interval.String(),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -98,17 +113,11 @@ func main() {
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- srv.Serve(listener) }()
 
-	reloading := make(chan struct{}, 1)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-hup:
-				reloading <- struct{}{}
-			}
-		}
-	}()
+	// One goroutine does the watching, which is what keeps the watcher's state safe without a lock.
+	// SIGHUP is still here as the manual force-reload: it asks that goroutine to look at the file now
+	// instead of at the next tick. A signal on a file that has not changed is not a reload, because
+	// there is nothing to reload, so the signal is a no-op rather than a rebuild.
+	go watcher.Run(ctx)
 
 	for {
 		select {
@@ -118,15 +127,14 @@ func main() {
 				os.Exit(1)
 			}
 			return
-		case <-reloading:
-			reloaded, err := config.Load(*cfgPath)
-			if err != nil {
-				m.Reloads.WithLabelValues("failed").Inc()
-				log.Error("reload_failed", "error", err)
-				continue
+		case <-hup:
+			// Send without blocking: a look is either pending or it is not, and a signal that arrives
+			// while one is pending is the same look. The watcher itself does the read, the parse, the
+			// validation and the swap, and it reports what it found.
+			select {
+			case watcher.Force <- struct{}{}:
+			default:
 			}
-			handler.Reload(reloaded)
-			log.Info("config_reloaded", "routes", len(reloaded.Routes))
 		case <-ctx.Done():
 			// Drain: stop taking new requests, then let the requests already
 			// streaming finish within the grace period.

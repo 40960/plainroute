@@ -63,6 +63,12 @@ stats() { curl -s "http://127.0.0.1:8091/stats" > "$WORK/stats.json"; }
 count() { v=$(grep -o "\"$1\":[0-9]*" "$WORK/stats.json" | head -1 | cut -d: -f2); printf '%s' "${v:-0}"; }
 total() { grep -o '"total":[0-9]*' "$WORK/stats.json" | cut -d: -f2; }
 
+# The reload counter is read from the metrics page rather than from a log line, because a check that
+# reads a log line can pass on a line the process wrote for a different reason.
+reloadcount() {
+  curl -s http://127.0.0.1:8080/metrics | grep "plainroute_config_reloads_total{outcome=\"$1\"}" | awk '{print $2}'
+}
+
 # What the upstream received for a key is one line per fact, which is how a check can
 # tell what the gateway forwarded from what the client sent. A key that was never sent says
 # so, so a check for an absent header cannot pass because the record is empty.
@@ -844,6 +850,12 @@ check "so the target stayed selectable: the next request reached the upstream to
 stats
 check "and the upstream counted that second request" "$((before + 1))" "$(total)"
 
+# The signal is a look, not a rebuild: a file that has not changed is not reloaded, because there is
+# nothing to reload. So this part changes the file first and then asks for a look. A check that passed
+# on a signal alone would pass for the wrong reason, on a no-op.
+cp "$WORK/config.yaml" "$WORK/config-before-reload.yaml"
+printf '\n  reloadcheck:\n    targets:\n      - name: added-by-reload\n        model: reloadcheck\n        base_url: http://127.0.0.1:8091/v1\n        api_key: e2e-plain\n' >> "$WORK/config.yaml"
+
 stats
 before=$(total)
 kill -HUP "$GATEWAY_PID"
@@ -851,16 +863,37 @@ sleep 1
 has "the reload that worked is logged" 'config_reloaded' "$(cat "$WORK/gateway.log")"
 has "and counted as the outcome for a reload that worked" 'outcome="ok".* 1' \
   "$(curl -s http://127.0.0.1:8080/metrics | grep 'plainroute_config_reloads_total')"
-status=$(post_to 8080 rafar "$WORK/r4.txt")
+has "the reload line names the file it read, and a fingerprint of the content, and never a value it read" \
+  'fingerprint' "$(grep 'config_reloaded' "$WORK/gateway.log")"
+not_has "and the key in the file is not in that line" 'e2e-plain' "$(grep 'config_reloaded' "$WORK/gateway.log")"
 stats
-check "the cooldown survived the reload: no upstream call" "$before" "$(total)"
-check "and the answer still comes from state" "429" "$status"
-has "with the code for every target cooling down" 'all_targets_cooling_down' "$(cat "$WORK/r4.txt")"
+check "the cooldown survived the reload, because target state is keyed by route and target name" \
+  "$before" "$(total)"
+status=$(post_to 8080 rafar "$WORK/cooling.txt")
+check "and the answer for the cooling target still comes from state" "429" "$status"
+has "with the code for every target cooling down" 'all_targets_cooling_down' "$(cat "$WORK/cooling.txt")"
+stats
+before=$(count e2e-plain)
+check "the route the changed file added is now in use, which is what says the reload applied" \
+  "200" "$(post_to 8080 reloadcheck "$WORK/reloaded.txt")"
+stats
+check "and that request was one upstream attempt on the key the reloaded file names, so the file that was read is the file that routes" \
+  "$((before + 1))" "$(count e2e-plain)"
 
-# A reload that fails keeps the config that was running, so an operator writing a bad file does
-# not break a working gateway. The reload reads the file the process started with, so this
-# replaces that file, and the check asks whether a route from the bad file exists, which only
-# the running config can answer.
+# One signal on a file that has not changed is one look that finds nothing: no reload, and no new
+# count. This is the dedup, and it is what keeps a watch loop from writing a line every second about
+# a file that is not changing.
+before=$(reloadcount ok)
+kill -HUP "$GATEWAY_PID"
+sleep 1
+check "a signal that changes nothing is not a reload" "$before" "$(reloadcount ok)"
+check "and the number of reload lines in the log did not grow" "1" \
+  "$(grep -c 'config_reloaded' "$WORK/gateway.log")"
+
+# A reload that fails keeps the config that was running, so an operator writing a bad file does not
+# break a working gateway. The last known good configuration is the one that was in force at the
+# failure, including the change the earlier reload applied: the check asks whether the route that the
+# successful reload added is still served, which only the running configuration can answer.
 cat > "$WORK/config.yaml" <<'YAML'
 routing:
   cooldown:
@@ -883,6 +916,15 @@ check "the gateway is still serving after a failed reload" "ok" \
   "$(curl -s http://127.0.0.1:8080/healthz)"
 check "a route from the file that failed to load is not in use, so the running config survived" \
   "404" "$(post_to 8080 newroute /dev/null)"
+check "and the route the last good file added is still in use, which is what last-known-good means" \
+  "200" "$(post_to 8080 reloadcheck "$WORK/survived.txt")"
+
+# The same bad content is looked at again, and the same problem is reported once: a file that stays
+# bad is not a log line every second.
+before=$(reloadcount failed)
+for _ in 1 2 3 4 5; do kill -HUP "$GATEWAY_PID"; sleep 1; done
+check "the same bad content is not counted again" "$before" "$(reloadcount failed)"
+check "and it is not logged again" "1" "$(grep -c 'reload_failed\|config_reload_failed' "$WORK/gateway.log")"
 
 printf '\n13. a 503 is answered as the upstream answered it, and does not cool the target\n'
 # The config this run uses writes no status map, so the map in force is the code default: 429

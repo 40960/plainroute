@@ -28,15 +28,24 @@ import (
 	"github.com/40960/plainroute/internal/routing"
 )
 
+// generation is one whole configuration, and it is the unit a reload swaps: the config, the
+// registry built from it, and the transport built from it, together as one value. Nothing inside a
+// generation is replaced in place. A request takes one generation at its start and uses that
+// generation for its whole life, so a reload cannot hand a request the timeouts of one configuration
+// and the targets of another.
+type generation struct {
+	cfg      *config.Config
+	registry *routing.Registry
+	client   *http.Client
+}
+
 // Handler serves the gateway API.
 type Handler struct {
-	cfg      atomic.Pointer[config.Config]
-	registry atomic.Pointer[routing.Registry]
-	metrics  *metrics.Metrics
-	log      *slog.Logger
-	now      func() time.Time
-	store    *routing.StateStore
-	client   *http.Client
+	current atomic.Pointer[generation]
+	metrics *metrics.Metrics
+	log     *slog.Logger
+	now     func() time.Time
+	store   *routing.StateStore
 
 	ready    atomic.Bool
 	draining atomic.Bool
@@ -59,24 +68,31 @@ func New(cfg *config.Config, m *metrics.Metrics, log *slog.Logger, store *routin
 		now:     now,
 		store:   store,
 		started: now(),
-		client:  &http.Client{Transport: newTransport(cfg), CheckRedirect: noRedirect},
 	}
-	h.cfg.Store(cfg)
-	h.registry.Store(routing.New(cfg, store, now))
+	h.Reload(cfg)
 	return h
 }
 
-// Reload swaps in a validated config. Requests already running keep the snapshot
-// they took at the start; new requests use the new config. Target state
-// survives through the state store, so a cooldown is not lost on reload.
+// Reload builds a generation from a config that has already been parsed and validated, and then
+// swaps the pointer. The build happens before the swap, so a config that cannot be turned into a
+// registry does not replace the one in force, and a caller that failed validation never gets here.
+// Routing a generation is the whole build, and it cannot fail, which is why there is no error check
+// here that could never fire: the step that can fail is the parse and validation, before this call.
+//
+// Target state comes from the store, so a target that is still configured keeps its cooldown and its
+// count of requests in flight across a reload, including a reload that only changed its api key.
+// Requests that started under the previous generation keep that generation until they finish, and
+// they release the slot on the same state object they took it on.
 func (h *Handler) Reload(cfg *config.Config) {
-	h.cfg.Store(cfg)
-	h.registry.Store(routing.New(cfg, h.store, h.now))
-	h.metrics.Reloads.WithLabelValues("ok").Inc()
+	h.current.Store(&generation{
+		cfg:      cfg,
+		registry: routing.New(cfg, h.store, h.now),
+		client:   &http.Client{Transport: newTransport(cfg), CheckRedirect: noRedirect},
+	})
 }
 
-func (h *Handler) Config() *config.Config      { return h.cfg.Load() }
-func (h *Handler) Registry() *routing.Registry { return h.registry.Load() }
+// Generation returns the configuration in force. A request calls this once, at its start.
+func (h *Handler) Generation() *generation { return h.current.Load() }
 
 // Drain stops the gateway from accepting new work. Readiness reports unhealthy
 // while draining.
@@ -106,21 +122,24 @@ func (h *Handler) Wait(deadline time.Time) bool {
 // ServeHTTP routes a small API surface. There is no middleware chain and no
 // request transformation beyond header filtering.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	cfg := h.Config()
+	// One generation, taken once. Everything this request does reads this value, so a reload that
+	// happens while it is running cannot change what it is doing.
+	g := h.Generation()
+	cfg := g.cfg
 
 	// The api key a caller presents is checked on the API endpoints only. Health,
 	// readiness and the metrics page stay open, because a monitoring system that cannot
 	// authenticate is the ordinary case and nothing on those pages is secret.
-	if strings.HasPrefix(r.URL.Path, "/v1/") && !h.authorize(w, r, cfg) {
+	if strings.HasPrefix(r.URL.Path, "/v1/") && !h.authorize(w, r, g) {
 		return
 	}
 
 	switch r.URL.Path {
 	case "/v1/chat/completions":
-		h.handleChat(w, r, cfg)
+		h.handleChat(w, r, g)
 		return
 	case "/v1/models":
-		h.handleModels(w, r, cfg)
+		h.handleModels(w, r, g)
 		return
 	case "/healthz", "/health/live":
 		h.status(w, http.StatusOK, "ok")
@@ -143,7 +162,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"unknown path "+r.URL.Path, metrics.NoRoute, "")
 }
 
-func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *config.Config) {
+func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, g *generation) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		h.reject(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "invalid_request_error",
 			"models listing requires GET", metrics.NoRoute, "")
@@ -169,7 +188,7 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *conf
 	created := h.started.Unix()
 	entries := make([]routeEntry, 0)
 
-	for _, pool := range h.Registry().Pools() {
+	for _, pool := range g.registry.Pools() {
 		seenModel := map[string]bool{}
 		models := make([]string, 0, len(pool.Targets))
 		for _, t := range pool.Targets {
@@ -208,7 +227,8 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *conf
 }
 
 // handleChat is the whole gateway behaviour for one client request.
-func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config.Config) {
+func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, g *generation) {
+	cfg := g.cfg
 	if r.Method != http.MethodPost {
 		h.reject(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "invalid_request_error",
 			"chat completions require POST", metrics.NoRoute, "")
@@ -248,7 +268,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 		return
 	}
 
-	primary, ok := h.Registry().Lookup(peek.Model)
+	primary, ok := g.registry.Lookup(peek.Model)
 	if !ok {
 		// The name a client sent cannot be a metric label: a client can send any string, and a
 		// label value is never removed. The name is logged instead, so it stays diagnosable.
@@ -268,7 +288,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 		seen := map[string]bool{primary.Route: true}
 		current := primary
 		for len(chain) <= cfg.Fallback.MaxHops && len(current.Fallbacks) > 0 {
-			next, ok := h.Registry().Lookup(current.Fallbacks[0])
+			next, ok := g.registry.Lookup(current.Fallbacks[0])
 			if !ok || seen[next.Route] {
 				break
 			}
@@ -289,7 +309,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 		// A fallback is only possible while nothing has been written to the
 		// client. Once a stream has started the gateway cannot take the response
 		// back, so it reports what it got.
-		result := h.attempt(w, r, cfg, pool, target, body, peek, id, start, i < len(chain)-1)
+		result := h.attempt(w, r, g, pool, target, body, peek, id, start, i < len(chain)-1)
 		if result.delivered {
 			return
 		}
@@ -339,7 +359,8 @@ func (h *Handler) reject(w http.ResponseWriter, r *http.Request, status int, cod
 // The caller key and the target key are different things. The caller key decides who may
 // use the gateway; the key that goes upstream is always the one configured for the selected
 // target, so a caller cannot aim a request at a key the operator did not give it.
-func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, cfg *config.Config) bool {
+func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, g *generation) bool {
+	cfg := g.cfg
 	if cfg.Auth.APIKey == "" {
 		return true
 	}

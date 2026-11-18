@@ -259,10 +259,10 @@ routes:
 	}
 
 	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && h.handler.Registry().Pools()[0].Snapshot()[0].Active != 0 {
+	for time.Now().Before(deadline) && h.handler.Generation().registry.Pools()[0].Snapshot()[0].Active != 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if active := h.handler.Registry().Pools()[0].Snapshot()[0].Active; active != 0 {
+	if active := h.handler.Generation().registry.Pools()[0].Snapshot()[0].Active; active != 0 {
 		t.Errorf("active counter leaked: %d", active)
 	}
 	if !strings.Contains(h.log.String(), "client_gone") {
@@ -297,7 +297,7 @@ timeouts:
 		h.clock.Advance(11 * time.Second)
 	}
 
-	for _, pool := range h.handler.Registry().Pools() {
+	for _, pool := range h.handler.Generation().registry.Pools() {
 		for _, s := range pool.Snapshot() {
 			if s.Active != 0 {
 				t.Errorf("%s leaked %d active requests", s.Target, s.Active)
@@ -402,7 +402,7 @@ timeouts:
 		if c.needle != "" && !bytes.Contains(body, []byte(c.needle)) {
 			t.Errorf("%s: body lost content: %q", c.name, string(body))
 		}
-		for _, pool := range h.handler.Registry().Pools() {
+		for _, pool := range h.handler.Generation().registry.Pools() {
 			for _, s := range pool.Snapshot() {
 				if s.Active != 0 {
 					t.Errorf("%s: active counter leaked: %d", c.name, s.Active)
@@ -732,7 +732,7 @@ routes:
 	if h.fake.TotalAttempts() != n {
 		t.Errorf("upstream attempts: got %d, want %d", h.fake.TotalAttempts(), n)
 	}
-	for _, pool := range h.handler.Registry().Pools() {
+	for _, pool := range h.handler.Generation().registry.Pools() {
 		for _, s := range pool.Snapshot() {
 			if s.Active != 0 {
 				t.Errorf("%s leaked %d active requests", s.Target, s.Active)
@@ -791,7 +791,7 @@ routes:
 	if !h.handler.Wait(time.Now().Add(2 * time.Second)) {
 		t.Error("Wait did not see the request finish")
 	}
-	for _, pool := range h.handler.Registry().Pools() {
+	for _, pool := range h.handler.Generation().registry.Pools() {
 		for _, s := range pool.Snapshot() {
 			if s.Active != 0 {
 				t.Errorf("active counter leaked after shutdown: %d", s.Active)
