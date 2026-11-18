@@ -378,7 +378,8 @@ func (s *Server) markCancelled(key string) {
 	}
 }
 
-// pathBehaviour is the list of fixed test paths the brief asks for.
+// pathBehaviour is the fixed set of test paths, so a script can check one case
+// without a keyed behaviour file.
 func pathBehaviour(path string) (Behavior, bool) {
 	switch path {
 	case "/success":

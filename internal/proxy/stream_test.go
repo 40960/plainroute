@@ -525,8 +525,8 @@ routes:
 	}
 }
 
-// TestConcurrentRequests is the load shape the brief asks for: more than a hundred
-// simultaneous requests, checked under the race detector.
+// TestConcurrentRequests checks the promise the project makes in its README: more
+// than a hundred simultaneous requests, checked under the race detector.
 func TestConcurrentRequests(t *testing.T) {
 	h := newHarness(t, `
 routes:
