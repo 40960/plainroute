@@ -140,13 +140,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.reject(w, r, http.StatusNotFound, "page_not_found", "invalid_request_error",
-		"unknown path "+r.URL.Path, metrics.NoTarget, "")
+		"unknown path "+r.URL.Path, metrics.NoRoute, "")
 }
 
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *config.Config) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		h.reject(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "invalid_request_error",
-			"models listing requires GET", metrics.NoTarget, "")
+			"models listing requires GET", metrics.NoRoute, "")
 		return
 	}
 
@@ -197,7 +197,7 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *conf
 	body, err := json.Marshal(map[string]any{"object": "list", "data": entries})
 	if err != nil {
 		h.reject(w, r, http.StatusInternalServerError, "internal_error", "internal_error",
-			"model listing failed", metrics.NoTarget, id)
+			"model listing failed", metrics.NoRoute, id)
 		return
 	}
 
@@ -211,7 +211,7 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *conf
 func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config.Config) {
 	if r.Method != http.MethodPost {
 		h.reject(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "invalid_request_error",
-			"chat completions require POST", metrics.NoTarget, "")
+			"chat completions require POST", metrics.NoRoute, "")
 		return
 	}
 
@@ -230,7 +230,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 			status, code = http.StatusRequestEntityTooLarge, "request_body_too_large"
 		}
 		h.metrics.GatewayRejected.WithLabelValues("all", code).Inc()
-		h.reject(w, r, status, code, "invalid_request_error", err.Error(), metrics.NoTarget, id)
+		h.reject(w, r, status, code, "invalid_request_error", err.Error(), metrics.NoRoute, id)
 		return
 	}
 
@@ -238,13 +238,13 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 	if err != nil {
 		h.metrics.GatewayRejected.WithLabelValues("all", "invalid_json").Inc()
 		h.reject(w, r, http.StatusBadRequest, "invalid_json", "invalid_request_error",
-			err.Error(), metrics.NoTarget, id)
+			err.Error(), metrics.NoRoute, id)
 		return
 	}
 	if peek.Model == "" {
 		h.metrics.GatewayRejected.WithLabelValues("all", "missing_model").Inc()
 		h.reject(w, r, http.StatusBadRequest, "missing_model", "invalid_request_error",
-			`field "model" is required`, metrics.NoTarget, id)
+			`field "model" is required`, metrics.NoRoute, id)
 		return
 	}
 
@@ -252,7 +252,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 	if !ok {
 		h.metrics.GatewayRejected.WithLabelValues(peek.Model, "model_not_found").Inc()
 		h.reject(w, r, http.StatusNotFound, "model_not_found", "invalid_request_error",
-			"model "+peek.Model+" is not a configured route", metrics.NoTarget, id)
+			"model "+peek.Model+" is not a configured route", metrics.NoRoute, id)
 		return
 	}
 
@@ -294,7 +294,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 		h.log.Warn("model_fallback",
 			"request_id", id,
 			"from_route", pool.Route,
-			"to_model", chain[i+1].Route,
+			"to_route", chain[i+1].Route,
 			"target", target.Name,
 			"reason", result.kind,
 		)
@@ -305,7 +305,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 	// target that recovers first.
 	if lastUnavailable == nil {
 		h.reject(w, r, http.StatusInternalServerError, "internal_error", "internal_error",
-			"no target state", metrics.NoTarget, id)
+			"no target state", metrics.NoRoute, id)
 		return
 	}
 
@@ -316,7 +316,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 	w.Header().Set("Retry-After", retryAfterSeconds(remaining))
 	h.metrics.GatewayRejected.WithLabelValues(lastUnavailable.Route, "all_targets_cooling_down").Inc()
 	h.reject(w, r, http.StatusTooManyRequests, "all_targets_cooling_down", "rate_limit_error",
-		"No healthy targets are currently available", metrics.NoTarget, id)
+		"No healthy targets are currently available", lastUnavailable.Route, id)
 }
 
 func (h *Handler) reject(w http.ResponseWriter, r *http.Request, status int, code, typ, message, route, id string) {
