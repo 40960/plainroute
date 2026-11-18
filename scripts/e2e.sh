@@ -58,7 +58,9 @@ not_has() { # name, pattern, haystack
 }
 
 stats() { curl -s "http://127.0.0.1:8091/stats" > "$WORK/stats.json"; }
-count() { grep -o "\"$1\":[0-9]*" "$WORK/stats.json" | head -1 | cut -d: -f2; }
+# A key that was never used is not in the stats, so a check that expects none has to say so
+# itself rather than compare an empty string.
+count() { v=$(grep -o "\"$1\":[0-9]*" "$WORK/stats.json" | head -1 | cut -d: -f2); printf '%s' "${v:-0}"; }
 total() { grep -o '"total":[0-9]*' "$WORK/stats.json" | cut -d: -f2; }
 
 # What the upstream received for a key is one line per fact, which is how a check can
@@ -69,6 +71,21 @@ field() { last "$1" | sed -n "s/^$2=//p" | head -1; }
 
 send() { # url, body file, output file; prints the status code
   curl -s -o "$3" -w '%{http_code}' -H 'Content-Type: application/json' -d @"$2" "$1"
+}
+
+post_to() { # port, model, output file; prints the status code
+  curl -s -o "$3" -w '%{http_code}' -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$2\",\"messages\":[{\"role\":\"user\",\"content\":\"prompt-zq\"}]}" \
+    "http://127.0.0.1:$1/v1/chat/completions"
+}
+
+# Some claims need a config the running gateway cannot have at the same time: allow mode and
+# round_robin are settings, not per-route settings, and a clamp of 0 is a routing setting. Each
+# such case starts its own gateway so a failure points at the case that owns it.
+start_gateway() { # config file, log file
+  "$BIN/plainroute" -config "$1" > "$2" 2>&1 &
+  EXTRA_PIDS+=("$!")
+  sleep 1
 }
 
 post() { # model, output file; prints the status code
@@ -86,7 +103,7 @@ go build -o "$BIN/plainroute-bench" ./cmd/bench
 # A process left over from an earlier run answers the checks instead of the one this
 # script starts, so a run can pass for the wrong reason or fail for one that is not its
 # own.
-for port in 8080 8091 8092; do
+for port in 8080 8091 8092 8093 8094 8095 8096 8097 8098 8099; do
   if (exec 9<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null; then
     printf 'something is already listening on 127.0.0.1:%s. Stop it before running this script.\n' "$port" >&2
     exit 1
@@ -125,11 +142,24 @@ cat > "$WORK/behaviors.json" <<'JSON'
     "status": 200,
     "body": "{\"object\":\"chat.completion\",\"choices\":[]}"
   },
+  "e2e-allow": {
+    "status": 200,
+    "body": "{\"object\":\"chat.completion\",\"choices\":[]}"
+  },
   "e2e-dist-1": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
   "e2e-dist-2": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
   "e2e-dist-3": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
   "e2e-dist-4": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-dist-5": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-dist-6": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-dist-7": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-dist-8": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
   "e2e-rafar": {
+    "status": 429,
+    "headers": { "Retry-After": "7200" },
+    "body": "{\"error\":{\"message\":\"rate limited\",\"type\":\"rate_limit_error\"}}"
+  },
+  "e2e-rafar-2": {
     "status": 429,
     "headers": { "Retry-After": "7200" },
     "body": "{\"error\":{\"message\":\"rate limited\",\"type\":\"rate_limit_error\"}}"
@@ -256,8 +286,9 @@ routes:
 YAML
 
 export E2E_STREAM=e2e-stream E2E_429=e2e-429 E2E_TOOL=e2e-tool E2E_CANCEL=e2e-cancel
-export E2E_PLAIN=e2e-plain E2E_GZIP=e2e-gzip E2E_RAFAR=e2e-rafar E2E_500=e2e-500
-export E2E_DIST_1=e2e-dist-1 E2E_DIST_2=e2e-dist-2 E2E_DIST_3=e2e-dist-3 E2E_DIST_4=e2e-dist-4
+export E2E_PLAIN=e2e-plain E2E_GZIP=e2e-gzip E2E_ALLOW=e2e-allow E2E_500=e2e-500
+export E2E_RAFAR=e2e-rafar E2E_RAFAR_2=e2e-rafar-2
+for i in 1 2 3 4 5 6 7 8; do export "E2E_DIST_$i=e2e-dist-$i"; done
 
 "$BIN/plainroute-fakeupstream" -listen 127.0.0.1:8091 -behaviors "$WORK/behaviors.json" > "$WORK/fake.log" 2>&1 &
 FAKE_PID=$!
@@ -488,6 +519,297 @@ has "the stream response is framed so a length cannot be wrong" 'Transfer-Encodi
   "$(cat "$WORK/stream-headers.txt")"
 not_has "and no Content-Length is claimed for it" 'Content-Length:' "$(cat "$WORK/stream-headers.txt")"
 
+printf '\n9. allow mode forwards only what the allow list names\n'
+cat > "$WORK/allow-config.yaml" <<'YAML'
+server:
+  listen: 127.0.0.1:8093
+headers:
+  # Connection is named in the allow list on purpose: a per-connection name is dropped even when
+  # the config would allow it, and that precedence is what this case checks. Authorization is
+  # named too, so the check that the configured key wins is not passed by a list that would have
+  # dropped the client's key anyway.
+  mode: allow
+  allow: [Cookie, Content-Type, Connection, Authorization]
+routes:
+  allowcheck:
+    targets:
+      - name: allowlisted
+        model: allowcheck
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_ALLOW
+YAML
+start_gateway "$WORK/allow-config.yaml" "$WORK/allow.log"
+
+curl -s -o /dev/null -H 'Content-Type: application/json' -H 'Cookie: zq-cookie-value' \
+  -H 'X-Zq-Outside-Allow: dropped' -H 'Connection: close' \
+  -H 'Authorization: Bearer sk-zq-client-key' \
+  -d '{"model":"allowcheck","messages":[{"role":"user","content":"prompt-zq"}]}' \
+  http://127.0.0.1:8093/v1/chat/completions > /dev/null
+record=$(last e2e-allow)
+has "the record is a request this case sent, not an empty record" 'method=POST' "$record"
+has "the allow list forwards what it names" 'Cookie=zq-cookie-value' "$record"
+not_has "a header outside the allow list is not forwarded" 'X-Zq-Outside-Allow=' "$record"
+not_has "hop-by-hop is dropped even when the allow list names it" 'Connection=' "$record"
+has "the key is still the configured one even when the allow list names Authorization" \
+  'Authorization=Bearer e2e-allow' "$record"
+# The fake upstream keys by the key it sees, so the same break that lets the caller's key travel
+# shows up as a record under that key. Read both records: the request must arrive under the
+# configured key and not under the one the client sent.
+has "and nothing arrived under the key the client sent" 'nothing was received for this key' \
+  "$(last sk-zq-client-key)"
+
+printf '\n10. sequential traffic over four targets\n'
+# Twelve requests, one at a time, so nothing is in flight when the next target is picked. This
+# is the distribution the README states: round_robin spreads twelve over four targets as 3 each,
+# while least_active keeps choosing the quietest one and a tie keeps config order, so a single
+# target takes all twelve.
+cat > "$WORK/round-config.yaml" <<'YAML'
+server:
+  listen: 127.0.0.1:8094
+routing:
+  strategy: round_robin
+routes:
+  distround:
+    targets:
+      - name: r1
+        model: distround
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_DIST_5
+      - name: r2
+        model: distround
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_DIST_6
+      - name: r3
+        model: distround
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_DIST_7
+      - name: r4
+        model: distround
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_DIST_8
+YAML
+start_gateway "$WORK/round-config.yaml" "$WORK/round.log"
+
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do post_to 8080 distleast /dev/null > /dev/null; done
+stats
+check "least_active: one target took all twelve" "12" "$(count e2e-dist-1)"
+check "least_active: the second target got none" "0" "$(count e2e-dist-2)"
+check "least_active: the third target got none" "0" "$(count e2e-dist-3)"
+check "least_active: the fourth target got none" "0" "$(count e2e-dist-4)"
+
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do post_to 8094 distround /dev/null > /dev/null; done
+stats
+check "round_robin: first target" "3" "$(count e2e-dist-5)"
+check "round_robin: second target" "3" "$(count e2e-dist-6)"
+check "round_robin: third target" "3" "$(count e2e-dist-7)"
+check "round_robin: fourth target" "3" "$(count e2e-dist-8)"
+
+printf '\n11. startup: a key is a name, and every missing name is reported at once\n'
+cat > "$WORK/badkey.yaml" <<'YAML'
+server:
+  listen: 127.0.0.1:8095
+routes:
+  startupcheck:
+    targets:
+      - name: written-as-a-value
+        model: startupcheck
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: sk-zq-not-a-variable-name
+      - name: missing-one
+        model: startupcheck
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: ZQ_MISSING_ONE
+      - name: missing-two
+        model: startupcheck
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: ZQ_MISSING_TWO
+YAML
+# Each startup check has a timeout: if a build stops reporting the problem and lets the process
+# start, the process would listen and never exit, and the script would hang instead of failing.
+out=$(timeout 10 "$BIN/plainroute" -config "$WORK/badkey.yaml" 2>&1); code=$?
+check "a key written as a value stops the process before it listens" "1" "$code"
+has "and names what it was given as a variable that is not set" \
+  'sk-zq-not-a-variable-name is not set' "$out"
+has "the error reports every missing name, not only the first" 'ZQ_MISSING_ONE is not set' "$out"
+has "so the second missing name is in the same error" 'ZQ_MISSING_TWO is not set' "$out"
+
+cat > "$WORK/badref.yaml" <<'YAML'
+server:
+  # Each startup fixture gets its own port: a process that fails for a different reason, such as
+  # a port already taken by a gateway this script started, would answer the exit-code checks.
+  listen: 127.0.0.1:8097
+routes:
+  startupcheck:
+    targets:
+      - name: reference-without-a-default
+        model: startupcheck
+        base_url: http://127.0.0.1:8091/v1
+        # The reference is put where an empty value would be accepted, so the exit code is
+        # attributable to the unset reference alone. On base_url the same process would still
+        # exit for a different reason, and the check would pass for the wrong reason.
+        path: ${ZQ_MISSING_REF}
+        api_key_env: E2E_PLAIN
+YAML
+out=$(timeout 10 "$BIN/plainroute" -config "$WORK/badref.yaml" 2>&1); code=$?
+check "an environment reference without a default stops the process" "1" "$code"
+has "and names the reference" 'ZQ_MISSING_REF' "$out"
+
+cat > "$WORK/default.yaml" <<'YAML'
+server:
+  listen: 127.0.0.1:8098
+routes:
+  startupcheck:
+    targets:
+      - name: reference-with-a-default
+        model: startupcheck
+        base_url: ${ZQ_UNSET_BASE:-http://127.0.0.1:8091/v1}
+        api_key_env: E2E_PLAIN
+YAML
+start_gateway "$WORK/default.yaml" "$WORK/default.log"
+check "the default is used when the variable is not set, and the process starts" "ok" \
+  "$(curl -s http://127.0.0.1:8098/healthz)"
+check "and a request through that route reaches the upstream" "200" \
+  "$(post_to 8098 startupcheck /dev/null)"
+
+printf '\n12. the cooldown window: the clamp, the map, and what a reload keeps\n'
+# The number a client sees is the window the gateway applied, not the number the upstream
+# printed. The checks allow the value to drop by one second between requests, because it is the
+# time that is left, so they do not guess a second.
+status=$(curl -s -D "$WORK/h1.txt" -o "$WORK/r1.txt" -w '%{http_code}' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"rafar","messages":[{"role":"user","content":"prompt-zq"}]}' \
+  http://127.0.0.1:8080/v1/chat/completions)
+check "the upstream answer is forwarded as it arrived" "429" "$status"
+has "the error body is forwarded too" 'rate limited' "$(cat "$WORK/r1.txt")"
+has "the answer carries the window the gateway applied, not the 7200 the upstream printed" \
+  'Retry-After: \(60\|59\)' "$(cat "$WORK/h1.txt")"
+not_has "and the number the upstream printed is not what travels to the client" \
+  'Retry-After: 7200' "$(cat "$WORK/h1.txt")"
+
+stats
+before=$(total)
+status=$(curl -s -D "$WORK/h2.txt" -o "$WORK/r2.txt" -w '%{http_code}' \
+  -H 'Content-Type: application/json' -d '{"model":"rafar","messages":[{"role":"user","content":"prompt-zq"}]}' \
+  http://127.0.0.1:8080/v1/chat/completions)
+stats
+check "the next request is answered from state, with no upstream call" "$before" "$(total)"
+check "and the answer is the code for every target cooling down" "429" "$status"
+has "the answer is the configured clamp, not the 7200 the upstream claimed" \
+  'Retry-After: \(60\|59\)' "$(cat "$WORK/h2.txt")"
+
+cat > "$WORK/clampoff.yaml" <<'YAML'
+server:
+  listen: 127.0.0.1:8096
+routing:
+  cooldown:
+    status: {429: 10s}
+    max: 0s
+routes:
+  rafar2:
+    targets:
+      - name: no-clamp
+        model: rafar2
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_RAFAR_2
+YAML
+start_gateway "$WORK/clampoff.yaml" "$WORK/clampoff.log"
+
+status=$(curl -s -D "$WORK/h3.txt" -o /dev/null -w '%{http_code}' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"rafar2","messages":[{"role":"user","content":"prompt-zq"}]}' \
+  http://127.0.0.1:8096/v1/chat/completions)
+check "with the clamp off the claim is what the gateway applies" "429" "$status"
+has "so the client sees the number as written" 'Retry-After: \(7200\|7199\)' "$(cat "$WORK/h3.txt")"
+
+stats
+before=$(count e2e-rafar-2)
+status=$(curl -s -D "$WORK/h5.txt" -o "$WORK/r3.txt" -w '%{http_code}' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"rafar2","messages":[{"role":"user","content":"prompt-zq"}]}' \
+  http://127.0.0.1:8096/v1/chat/completions)
+stats
+check "the next request is answered from state, with no upstream call" "$before" "$(count e2e-rafar-2)"
+check "and the answer comes from the gateway's own state, not from the upstream" "429" "$status"
+has "with the code for every target cooling down" 'all_targets_cooling_down' "$(cat "$WORK/r3.txt")"
+has "and the window that state holds is the number the upstream printed, because nothing clamped it" \
+  'Retry-After: \(7200\|7199\)' "$(cat "$WORK/h5.txt")"
+
+cat > "$WORK/badmax.yaml" <<'YAML'
+server:
+  listen: 127.0.0.1:8099
+routing:
+  cooldown:
+    max: -1s
+routes:
+  startupcheck:
+    targets:
+      - name: negative-clamp
+        model: startupcheck
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_PLAIN
+YAML
+out=$(timeout 10 "$BIN/plainroute" -config "$WORK/badmax.yaml" 2>&1); code=$?
+check "a negative clamp is a startup error rather than a silent no clamp" "1" "$code"
+has "and the message says what it expects" 'must be positive, or 0 for no clamp' "$out"
+
+# A status that is not in the map does not cool a target down, and no window is claimed with it.
+# A cooled target is skipped, so a second request on the same route would be answered from state
+# with 429. The second request is what makes this falsifiable: the first reaches the upstream
+# whatever the code does, so a check on the first could never fail.
+stats
+before=$(total)
+status=$(curl -s -D "$WORK/h4.txt" -o "$WORK/u1.txt" -w '%{http_code}' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"unmapped","messages":[{"role":"user","content":"prompt-zq"}]}' \
+  http://127.0.0.1:8080/v1/chat/completions)
+check "an unmapped status is answered by the upstream as it arrived" "500" "$status"
+check "and no cooldown is claimed with it" "" "$(grep -i 'Retry-After' "$WORK/h4.txt")"
+stats
+before=$(total)
+check "so the target stayed selectable: the next request reached the upstream too" "500" \
+  "$(post_to 8080 unmapped "$WORK/u2.txt")"
+stats
+check "and the upstream counted that second request" "$((before + 1))" "$(total)"
+
+stats
+before=$(total)
+kill -HUP "$GATEWAY_PID"
+sleep 1
+has "the reload that worked is logged" 'config_reloaded' "$(cat "$WORK/gateway.log")"
+has "and counted as the outcome for a reload that worked" 'outcome="ok".* 1' \
+  "$(curl -s http://127.0.0.1:8080/metrics | grep 'plainroute_config_reloads_total')"
+status=$(post_to 8080 rafar "$WORK/r4.txt")
+stats
+check "the cooldown survived the reload: no upstream call" "$before" "$(total)"
+check "and the answer still comes from state" "429" "$status"
+has "with the code for every target cooling down" 'all_targets_cooling_down' "$(cat "$WORK/r4.txt")"
+
+# A reload that fails keeps the config that was running, so an operator writing a bad file does
+# not break a working gateway. The reload reads the file the process started with, so this
+# replaces that file, and the check asks whether a route from the bad file exists, which only
+# the running config can answer.
+cat > "$WORK/config.yaml" <<'YAML'
+routing:
+  cooldown:
+    max: -1s
+routes:
+  newroute:
+    targets:
+      - name: bad-reload
+        model: newroute
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_PLAIN
+YAML
+kill -HUP "$GATEWAY_PID"
+sleep 1
+has "the failed reload is logged with the problem it found" \
+  'must be positive, or 0 for no clamp' "$(cat "$WORK/gateway.log")"
+has "and counted as the other outcome" 'outcome="failed".* 1' \
+  "$(curl -s http://127.0.0.1:8080/metrics | grep 'plainroute_config_reloads_total')"
+check "the gateway is still serving after a failed reload" "ok" \
+  "$(curl -s http://127.0.0.1:8080/healthz)"
+check "a route from the file that failed to load is not in use, so the running config survived" \
+  "404" "$(post_to 8080 newroute /dev/null)"
 
 printf '\n%d checks: %s\n' "$CHECKS" "$([ "$FAIL" = 0 ] && echo 'all passed' || echo 'failures')"
 exit "$FAIL"
