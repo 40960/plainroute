@@ -15,7 +15,7 @@ import (
 // including the cases a client controls.
 
 func TestHopByHopHeadersAreDroppedInBothDirections(t *testing.T) {
-	cfg, err := config.Parse([]byte("models:\n  m:\n    upstream_model: m\n    targets:\n      - name: a\n        base_url: https://fake.invalid/v1\n        api_key_env: KEY_A\n"), config.Env{"KEY_A": "key-a"})
+	cfg, err := config.Parse([]byte("routes:\n  m:\n    targets:\n      - name: a\n        model: m\n        base_url: https://fake.invalid/v1\n        api_key_env: KEY_A\n"), config.Env{"KEY_A": "key-a"})
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestHopByHopHeadersAreDroppedInBothDirections(t *testing.T) {
 // the client chooses the model, not the key. A client that sends its own Authorization
 // must not be able to aim a request at a key the operator did not give it.
 func TestAuthorizationIsAlwaysTheConfiguredKey(t *testing.T) {
-	cfg, err := config.Parse([]byte("models:\n  m:\n    upstream_model: m\n    targets:\n      - name: a\n        base_url: https://fake.invalid/v1\n        api_key_env: KEY_A\n"), config.Env{"KEY_A": "key-a"})
+	cfg, err := config.Parse([]byte("routes:\n  m:\n    targets:\n      - name: a\n        model: m\n        base_url: https://fake.invalid/v1\n        api_key_env: KEY_A\n"), config.Env{"KEY_A": "key-a"})
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
@@ -83,11 +83,11 @@ func TestDenyModeForwardsEverythingExceptDeny(t *testing.T) {
 	cfg, err := config.Parse([]byte(`headers:
   mode: deny
   deny: [Cookie, X-Forwarded-For]
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `), config.Env{"KEY_A": "key-a"})
@@ -123,11 +123,11 @@ func TestAllowModeForwardsOnlyWhatIsListed(t *testing.T) {
 	cfg, err := config.Parse([]byte(`headers:
   mode: allow
   allow: [Accept, X-Request-Id]
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `), config.Env{"KEY_A": "key-a"})
@@ -159,11 +159,11 @@ func TestDeploymentAndExtraHeadersAreApplied(t *testing.T) {
   mode: deny
   extra:
     X-Plainroute-Test: gateway
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
         headers:
@@ -192,11 +192,11 @@ func TestRequestIDForwardingCanBeTurnedOff(t *testing.T) {
 	cfg, err := config.Parse([]byte(`headers:
   mode: deny
   forward_request_id: false
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `), config.Env{"KEY_A": "key-a"})

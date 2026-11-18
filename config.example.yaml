@@ -85,24 +85,27 @@ metrics:
 # auth:
 #   api_key_env: PLAINROUTE_API_KEY
 
-models:
+routes:
+  # A route is a name a client can send. The model belongs to each target, so one route can
+  # be served by several models, and two targets can differ by model, endpoint, key, headers
+  # or concurrency limit alone. The model field is the only field PlainRoute changes in a
+  # request body, and it changes by splicing bytes rather than re-serialising the document.
   demo:
-    # The name the client sends, mapped to the name the upstream expects. This is the only
-    # field PlainRoute changes in a request body.
-    upstream_model: provider/model-one
     targets:
       - name: account-1
+        model: provider/model-one
         base_url: https://api.example.com/v1
         api_key_env: EXAMPLE_API_KEY_1
         max_active: 4
       - name: account-2
+        model: provider/model-one
         base_url: https://api.example.com/v1
         api_key_env: EXAMPLE_API_KEY_2
         max_active: 4
 
   local:
-    upstream_model: qwen3:8b
     targets:
       - name: ollama
+        model: qwen3:8b
         base_url: http://127.0.0.1:11434/v1
         api_key_env: LOCAL_KEY

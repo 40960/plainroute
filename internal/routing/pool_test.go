@@ -31,10 +31,9 @@ func (c *fakeClock) Advance(d time.Duration) {
 
 func testPool(strategy string, names []string, clock *fakeClock) *Pool {
 	pool := &Pool{
-		Model:         "demo",
-		UpstreamModel: "provider/model-one",
-		strategy:      strategy,
-		now:           clock.Now,
+		Route:    "demo",
+		strategy: strategy,
+		now:      clock.Now,
 	}
 	store := NewStateStore()
 	for _, name := range names {
@@ -260,14 +259,15 @@ func TestStateSurvivesReload(t *testing.T) {
 	store := NewStateStore()
 
 	cfg, err := config.Parse([]byte(`
-models:
+routes:
   demo:
-    upstream_model: provider/model-one
     targets:
       - name: account-1
+        model: provider/model-one
         base_url: http://127.0.0.1:8081
         api_key_env: K1
       - name: account-2
+        model: provider/model-one
         base_url: http://127.0.0.1:8082
         api_key_env: K2
 `), config.Env{"K1": "k1", "K2": "k2"})
@@ -276,21 +276,23 @@ models:
 	}
 
 	first := New(cfg, store, clock.Now)
-	pool := first.pools["demo"]
+	pool := first.routes["demo"]
 	pool.Cooldown(pool.Targets[0], 10*time.Second, "rate_limit")
 
 	reloaded, err := config.Parse([]byte(`
-models:
+routes:
   demo:
-    upstream_model: provider/model-one
     targets:
       - name: account-1
+        model: provider/model-one
         base_url: http://127.0.0.1:8081
         api_key_env: K1
       - name: account-2
+        model: provider/model-one
         base_url: http://127.0.0.1:8082
         api_key_env: K2
       - name: account-3
+        model: provider/model-one
         base_url: http://127.0.0.1:8083
         api_key_env: K3
 `), config.Env{"K1": "k1", "K2": "k2", "K3": "k3"})
@@ -299,7 +301,7 @@ models:
 	}
 	second := New(reloaded, store, clock.Now)
 
-	remaining, cooling := second.pools["demo"].Targets[0].state.Remaining(clock.Now())
+	remaining, cooling := second.routes["demo"].Targets[0].state.Remaining(clock.Now())
 	if !cooling || remaining != 10*time.Second {
 		t.Errorf("reload lost the cooldown: remaining=%v cooling=%v", remaining, cooling)
 	}
@@ -315,19 +317,19 @@ models:
 	reloadedPool.Release(d)
 }
 
-func TestLookupAcceptsAliasAndRealModelName(t *testing.T) {
+func TestLookupUsesRouteNamesOnly(t *testing.T) {
 	cfg, err := config.Parse([]byte(`
-models:
+routes:
   demo:
-    upstream_model: provider/model-one
     targets:
       - name: a
+        model: provider/model-one
         base_url: http://127.0.0.1:8081
         api_key_env: K
   two:
-    upstream_model: provider/model-two
     targets:
       - name: b
+        model: provider/model-two
         base_url: http://127.0.0.1:8081
         api_key_env: K
 `), config.Env{"K": "k"})
@@ -336,17 +338,25 @@ models:
 	}
 	r := New(cfg, nil, time.Now)
 
-	for _, name := range []string{"demo", "provider/model-one", "two", "provider/model-two"} {
+	for _, name := range []string{"demo", "two"} {
 		pool, ok := r.Lookup(name)
 		if !ok {
 			t.Fatalf("lookup %q: not found", name)
 		}
-		if pool.Model != name && pool.UpstreamModel != name {
-			t.Errorf("lookup %q resolved to %q", name, pool.Model)
+		if pool.Route != name {
+			t.Errorf("lookup %q resolved to %q", name, pool.Route)
 		}
 	}
+
+	// A model name is not a route name. Lookup used to accept it, which was possible only while
+	// one alias mapped to exactly one model. A target carries its own model now, so the same model
+	// name can sit behind several routes, and picking between them would need a tie-break a reader
+	// cannot predict from the config.
+	if _, ok := r.Lookup("provider/model-one"); ok {
+		t.Error("a model name must not resolve to a route")
+	}
 	if _, ok := r.Lookup("unknown-model"); ok {
-		t.Error("unknown model must not resolve")
+		t.Error("unknown route must not resolve")
 	}
 	if r.Strategy() != StrategyLeastActive {
 		t.Errorf("strategy: got %q, want %s", r.Strategy(), StrategyLeastActive)

@@ -10,24 +10,24 @@ import (
 	"github.com/40960/plainroute/internal/config"
 )
 
-// Registry maps the model name a client sends to a pool of targets.
+// Registry maps the name a client sends in the model field to the route behind it.
 //
-// Lookup accepts the configured alias and the real upstream model name, so a
-// client can use either. Aliases are checked first; if two models share the same
-// upstream name, the model listed first in sorted alias order wins.
+// A route is found by its name only. Lookup used to accept the real model name as well, which
+// worked while one name mapped to exactly one model. A target carries its own model now, so the
+// same model name can sit behind several routes, and picking between them would need a rule a
+// reader cannot predict from the config. The name a client sends is therefore a route name, and a
+// route name is not necessarily a model name.
 type Registry struct {
 	mu       sync.Mutex
-	pools    map[string]*Pool
-	byName   map[string]*Pool
+	routes   map[string]*Pool
 	order    []string
 	strategy string
 	now      func() time.Time
 	store    *StateStore
 }
 
-// New builds a registry from a validated config. Target state comes from the
-// store, so rebuilding after a reload does not clear a cooldown for a target
-// that is still configured.
+// New builds a registry from a validated config. Target state comes from the store, so rebuilding
+// after a reload does not clear a cooldown for a target that is still configured.
 func New(cfg *config.Config, store *StateStore, now func() time.Time) *Registry {
 	if store == nil {
 		store = NewStateStore()
@@ -37,75 +37,59 @@ func New(cfg *config.Config, store *StateStore, now func() time.Time) *Registry 
 	}
 
 	r := &Registry{
-		pools:    map[string]*Pool{},
-		byName:   map[string]*Pool{},
+		routes:   map[string]*Pool{},
+		order:    config.RouteNames(cfg.Routes),
 		strategy: cfg.Routing.Strategy,
 		now:      now,
 		store:    store,
 	}
 
-	for _, alias := range config.ModelNames(cfg.Models) {
-		model := cfg.Models[alias]
+	for _, name := range r.order {
+		route := cfg.Routes[name]
 		pool := &Pool{
-			Model:         alias,
-			UpstreamModel: model.UpstreamModel,
-			Fallbacks:     append([]string(nil), model.Fallbacks...),
-			strategy:      r.strategy,
-			now:           r.now,
+			Route:     name,
+			Fallbacks: append([]string(nil), route.Fallbacks...),
+			strategy:  r.strategy,
+			now:       now,
 		}
-		for i := range model.Targets {
-			d := &model.Targets[i]
-			endpoint := d.Path
+		for i := range route.Targets {
+			t := &route.Targets[i]
+			endpoint := t.Path
 			if endpoint == "" {
 				endpoint = config.DefaultEndpoint
 			}
 			pool.Targets = append(pool.Targets, &Target{
-				Name:          d.Name,
-				Model:         alias,
-				UpstreamModel: model.UpstreamModel,
-				BaseURL:       strings.TrimRight(d.BaseURL, "/"),
-				Endpoint:      endpoint,
-				APIKey:        d.APIKey,
-				Headers:       d.Headers,
-				MaxActive:     d.MaxActive,
-				state:         store.Get(alias, d.Name),
+				Name:      t.Name,
+				Model:     t.Model,
+				BaseURL:   strings.TrimRight(t.BaseURL, "/"),
+				Endpoint:  endpoint,
+				APIKey:    t.APIKey,
+				Headers:   t.Headers,
+				MaxActive: t.MaxActive,
+				state:     store.Get(name, t.Name),
 			})
 		}
-		r.pools[alias] = pool
-	}
-
-	r.order = config.ModelNames(cfg.Models)
-
-	// Register the real model names too, in sorted alias order so the mapping is
-	// reproducible.
-	for _, alias := range r.order {
-		pool := r.pools[alias]
-		if _, ok := r.byName[pool.UpstreamModel]; !ok {
-			r.byName[pool.UpstreamModel] = pool
-		}
-	}
-	for _, alias := range r.order {
-		r.byName[alias] = r.pools[alias]
+		r.routes[name] = pool
 	}
 
 	return r
 }
 
-// Lookup resolves the model name a client sent.
-func (r *Registry) Lookup(model string) (*Pool, bool) {
+// Lookup resolves the name a client sent.
+func (r *Registry) Lookup(name string) (*Pool, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	pool, ok := r.byName[model]
+	pool, ok := r.routes[name]
 	return pool, ok
 }
 
-// Pools returns every pool in stable alias order.
+// Pools returns every pool in stable name order.
 func (r *Registry) Pools() []*Pool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]*Pool, 0, len(r.order))
-	for _, alias := range r.order {
-		out = append(out, r.pools[alias])
+	for _, name := range r.order {
+		out = append(out, r.routes[name])
 	}
 	return out
 }

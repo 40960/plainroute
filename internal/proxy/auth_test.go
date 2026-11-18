@@ -24,11 +24,11 @@ func TestCallerKeyGate(t *testing.T) {
 	h := newHarness(t, `
 auth:
   api_key_env: CALLER_KEY
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: DEPLOYMENT_KEY
 `, config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})
@@ -81,10 +81,10 @@ models:
 	if h.fake.Attempts("target-key") != 2 {
 		t.Errorf("upstream attempts: got %d, want 2", h.fake.Attempts("target-key"))
 	}
-	if got := testutil.ToFloat64(h.metrics.GatewayRejected.WithLabelValues(metrics.NoModel, "invalid_api_key")); got != 2 {
+	if got := testutil.ToFloat64(h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "invalid_api_key")); got != 2 {
 		t.Errorf("gateway_rejected invalid_api_key: got %v, want 2", got)
 	}
-	if got := testutil.ToFloat64(h.metrics.RequestsTotal.WithLabelValues(metrics.NoModel, metrics.NoTarget, "4xx")); got != 2 {
+	if got := testutil.ToFloat64(h.metrics.RequestsTotal.WithLabelValues(metrics.NoRoute, metrics.NoTarget, "4xx")); got != 2 {
 		t.Errorf("requests_total for the rejected requests: got %v, want 2", got)
 	}
 
@@ -109,11 +109,11 @@ func TestGateCoversTheAPIEndpointsOnly(t *testing.T) {
 	h := newHarness(t, `
 auth:
   api_key_env: CALLER_KEY
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: DEPLOYMENT_KEY
 `, config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})
@@ -156,11 +156,11 @@ models:
 // request that presents any key is served.
 func TestGateIsOffWhenNothingIsConfigured(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: DEPLOYMENT_KEY
 `, config.Env{"DEPLOYMENT_KEY": "target-key"})
@@ -192,11 +192,11 @@ models:
 // handled is not retroactively gated.
 func TestGateAppliesAfterReload(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: DEPLOYMENT_KEY
 `, config.Env{"DEPLOYMENT_KEY": "target-key"})
@@ -211,11 +211,11 @@ models:
 	reloaded, err := config.Parse([]byte(`
 auth:
   api_key_env: CALLER_KEY
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: DEPLOYMENT_KEY
 `), config.Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})

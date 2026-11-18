@@ -86,7 +86,7 @@ type Config struct {
 	Logging  LoggingConfig          `yaml:"logging"`
 	Metrics  MetricsConfig          `yaml:"metrics"`
 	Auth     AuthConfig             `yaml:"auth"`
-	Models   map[string]ModelConfig `yaml:"models"`
+	Routes   map[string]RouteConfig `yaml:"routes"`
 }
 
 // AuthConfig is the api key a caller presents, read from the environment. It is a single
@@ -193,14 +193,20 @@ type MetricsConfig struct {
 // On reports whether the metrics page is served. Absent means on.
 func (m MetricsConfig) On() bool { return m.Enabled == nil || *m.Enabled }
 
-type ModelConfig struct {
-	UpstreamModel string         `yaml:"upstream_model"`
-	Fallbacks     []string       `yaml:"fallbacks"`
-	Targets       []TargetConfig `yaml:"targets"`
+// RouteConfig is a name a client can send in the model field. It is not a model: the model
+// belongs to each target, so one name can be served by several different models. A route owns the
+// set of selectable targets and the fallback chain, and nothing else.
+type RouteConfig struct {
+	Fallbacks []string       `yaml:"fallbacks"`
+	Targets   []TargetConfig `yaml:"targets"`
 }
 
+// TargetConfig is one upstream: a model name, an endpoint and one key. Two targets can differ by
+// any of them, which is why "the same model with a different key" is one case of a target, not
+// its definition.
 type TargetConfig struct {
 	Name      string            `yaml:"name"`
+	Model     string            `yaml:"model"`
 	BaseURL   string            `yaml:"base_url"`
 	APIKeyEnv string            `yaml:"api_key_env"`
 	Path      string            `yaml:"path"`
@@ -418,45 +424,45 @@ func validate(cfg *Config, env Env) error {
 		cfg.Auth.APIKey = key
 	}
 
-	if len(cfg.Models) == 0 {
-		problems = append(problems, "at least one model must be configured")
+	if len(cfg.Routes) == 0 {
+		problems = append(problems, "at least one route must be configured")
 	}
 
-	seenAlias := map[string]bool{}
-	for alias, model := range cfg.Models {
-		if alias == "" {
-			problems = append(problems, "a model alias is required")
+	seenRoute := map[string]bool{}
+	for routeName, route := range cfg.Routes {
+		if routeName == "" {
+			problems = append(problems, "a route name is required")
 			continue
 		}
-		if seenAlias[alias] {
-			problems = append(problems, fmt.Sprintf("duplicate model alias %q", alias))
+		if seenRoute[routeName] {
+			problems = append(problems, fmt.Sprintf("duplicate route name %q", routeName))
 			continue
 		}
-		seenAlias[alias] = true
-		if model.UpstreamModel == "" {
-			problems = append(problems, fmt.Sprintf("model %q: upstream_model is required", alias))
-		}
-		if len(model.Targets) == 0 {
-			problems = append(problems, fmt.Sprintf("model %q has no targets", alias))
+		seenRoute[routeName] = true
+		if len(route.Targets) == 0 {
+			problems = append(problems, fmt.Sprintf("route %q has no targets", routeName))
 		}
 
 		seenName := map[string]bool{}
-		for i := range model.Targets {
-			d := &model.Targets[i]
-			where := fmt.Sprintf("model %q target %d", alias, i+1)
-			if d.Name == "" {
+		for i := range route.Targets {
+			t := &route.Targets[i]
+			where := fmt.Sprintf("route %q target %d", routeName, i+1)
+			if t.Name == "" {
 				problems = append(problems, fmt.Sprintf("%s: name is required", where))
-			} else if seenName[d.Name] {
-				problems = append(problems, fmt.Sprintf("model %q has duplicate target name %q", alias, d.Name))
+			} else if seenName[t.Name] {
+				problems = append(problems, fmt.Sprintf("route %q has duplicate target name %q", routeName, t.Name))
 			} else {
-				seenName[d.Name] = true
+				seenName[t.Name] = true
+			}
+			if t.Model == "" {
+				problems = append(problems, fmt.Sprintf("%s: model is required", where))
 			}
 
-			u, err := url.Parse(d.BaseURL)
+			u, err := url.Parse(t.BaseURL)
 			if err != nil {
 				problems = append(problems, fmt.Sprintf("%s: base_url is not a valid URL: %v", where, err))
 			} else if u.Scheme != "http" && u.Scheme != "https" {
-				problems = append(problems, fmt.Sprintf("%s: base_url %q must use http or https", where, d.BaseURL))
+				problems = append(problems, fmt.Sprintf("%s: base_url %q must use http or https", where, t.BaseURL))
 			} else if u.Host == "" {
 				problems = append(problems, fmt.Sprintf("%s: base_url must include a host", where))
 			} else if u.User != nil {
@@ -465,37 +471,37 @@ func validate(cfg *Config, env Env) error {
 				problems = append(problems, fmt.Sprintf("%s: base_url must not contain a query", where))
 			}
 
-			if d.APIKeyEnv == "" {
+			if t.APIKeyEnv == "" {
 				problems = append(problems, fmt.Sprintf("%s: api_key_env is required", where))
 			} else {
-				key := env[d.APIKeyEnv]
+				key := env[t.APIKeyEnv]
 				if key == "" {
-					problems = append(problems, fmt.Sprintf("%s: environment variable %s is not set", where, d.APIKeyEnv))
+					problems = append(problems, fmt.Sprintf("%s: environment variable %s is not set", where, t.APIKeyEnv))
 				}
-				d.APIKey = key
+				t.APIKey = key
 			}
-			if d.Path != "" && !strings.HasPrefix(d.Path, "/") {
+			if t.Path != "" && !strings.HasPrefix(t.Path, "/") {
 				problems = append(problems, fmt.Sprintf("%s: path must start with /", where))
 			}
-			if d.MaxActive < 0 {
+			if t.MaxActive < 0 {
 				problems = append(problems, fmt.Sprintf("%s: max_active must be zero or positive", where))
 			}
-			for name, value := range d.Headers {
-				if name == "" || value == "" {
-					problems = append(problems, fmt.Sprintf("%s: header %q is empty", where, name))
+			for header, value := range t.Headers {
+				if header == "" || value == "" {
+					problems = append(problems, fmt.Sprintf("%s: header %q is empty", where, header))
 				}
 			}
 		}
 
-		for _, target := range model.Fallbacks {
-			if _, ok := cfg.Models[target]; !ok {
-				problems = append(problems, fmt.Sprintf("model %q fallback %q is not a configured model", alias, target))
+		for _, fallback := range route.Fallbacks {
+			if _, ok := cfg.Routes[fallback]; !ok {
+				problems = append(problems, fmt.Sprintf("route %q fallback %q is not a configured route", routeName, fallback))
 			}
 		}
 	}
 
-	if cfg.Fallback.Enabled && len(cfg.Models) > 0 {
-		if err := checkFallbackCycles(cfg.Models); err != nil {
+	if cfg.Fallback.Enabled && len(cfg.Routes) > 0 {
+		if err := checkFallbackCycles(cfg.Routes); err != nil {
 			problems = append(problems, err.Error())
 		}
 	}
@@ -508,41 +514,41 @@ func validate(cfg *Config, env Env) error {
 }
 
 // checkFallbackCycles refuses a fallback graph that could loop forever.
-func checkFallbackCycles(models map[string]ModelConfig) error {
+func checkFallbackCycles(routes map[string]RouteConfig) error {
 	const (
 		white = 0
 		grey  = 1
 		black = 2
 	)
 	color := map[string]int{}
-	var visit func(alias string, depth int) error
-	visit = func(alias string, depth int) error {
-		if depth > len(models) {
-			return fmt.Errorf("fallback graph reachable from %q is deeper than the number of models", alias)
+	var visit func(name string, depth int) error
+	visit = func(name string, depth int) error {
+		if depth > len(routes) {
+			return fmt.Errorf("fallback graph reachable from %q is deeper than the number of routes", name)
 		}
-		color[alias] = grey
-		for _, target := range models[alias].Fallbacks {
-			if target == alias {
-				return fmt.Errorf("model %q falls back to itself", alias)
+		color[name] = grey
+		for _, next := range routes[name].Fallbacks {
+			if next == name {
+				return fmt.Errorf("route %q falls back to itself", name)
 			}
-			if _, ok := models[target]; !ok {
-				return fmt.Errorf("model %q falls back to unknown model %q", alias, target)
+			if _, ok := routes[next]; !ok {
+				return fmt.Errorf("route %q falls back to unknown route %q", name, next)
 			}
-			if color[target] == grey {
-				return fmt.Errorf("fallback cycle: %q -> %q", alias, target)
+			if color[next] == grey {
+				return fmt.Errorf("fallback cycle: %q -> %q", name, next)
 			}
-			if color[target] == white {
-				if err := visit(target, depth+1); err != nil {
+			if color[next] == white {
+				if err := visit(next, depth+1); err != nil {
 					return err
 				}
 			}
 		}
-		color[alias] = black
+		color[name] = black
 		return nil
 	}
-	for _, alias := range ModelNames(models) {
-		if color[alias] == white {
-			if err := visit(alias, 0); err != nil {
+	for _, name := range RouteNames(routes) {
+		if color[name] == white {
+			if err := visit(name, 0); err != nil {
 				return err
 			}
 		}
@@ -550,11 +556,12 @@ func checkFallbackCycles(models map[string]ModelConfig) error {
 	return nil
 }
 
-// ModelNames returns the configured aliases in a stable order, so /v1/models is
-// reproducible and tests can rely on it.
-func ModelNames(models map[string]ModelConfig) []string {
-	names := make([]string, 0, len(models))
-	for name := range models {
+// RouteNames returns the configured route names in a stable order, so /v1/models is
+// reproducible and tests can rely on it. A route name is what a client sends in the
+// model field; it is not necessarily a model name.
+func RouteNames(routes map[string]RouteConfig) []string {
+	names := make([]string, 0, len(routes))
+	for name := range routes {
 		names = append(names, name)
 	}
 	sort.Strings(names)

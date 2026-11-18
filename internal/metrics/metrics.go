@@ -17,12 +17,13 @@ import (
 )
 
 // NoTarget is the label used when a request never reached a target, for
-// example a rejected model name or a request answered from cooldown state alone.
+// example a name that is not a configured route, or a request answered from cooldown
+// state alone.
 const NoTarget = "none"
 
-// NoModel is the label for a request the gateway answered on its own, with no model in
+// NoRoute is the label for a request the gateway answered on its own, with no route in
 // play, such as a health endpoint.
-const NoModel = "none"
+const NoRoute = "none"
 
 // Metrics is the set of collectors PlainRoute exposes. Everything is a plain
 // Prometheus collector, so the values are safe to update from many goroutines.
@@ -57,54 +58,54 @@ func New() *Metrics {
 		RequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_requests_total",
 			Help: "Client requests handled, labelled by model, target and status class.",
-		}, []string{"model", "target", "status_class"}),
+		}, []string{"route", "target", "status_class"}),
 		UpstreamAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_upstream_attempts_total",
 			Help: "Upstream requests actually sent. With retry disabled this matches requests_total for proxied requests.",
-		}, []string{"model", "target", "status_class"}),
+		}, []string{"route", "target", "status_class"}),
 		ActiveRequests: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "plainroute_active_requests",
 			Help: "Requests currently in flight per target.",
-		}, []string{"model", "target"}),
+		}, []string{"route", "target"}),
 		CooldownEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_cooldown_events_total",
 			Help: "Times a target was put into cooldown, by reason.",
-		}, []string{"model", "target", "reason"}),
+		}, []string{"route", "target", "reason"}),
 		CooldownActive: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "plainroute_target_in_cooldown",
 			Help: "1 while a target is cooling down, 0 otherwise.",
-		}, []string{"model", "target"}),
+		}, []string{"route", "target"}),
 		Latency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "plainroute_request_duration_seconds",
 			Help:    "Time from request start to response end, per request.",
 			Buckets: latencyBuckets,
-		}, []string{"model", "target", "stream"}),
+		}, []string{"route", "target", "stream"}),
 		TTFT: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "plainroute_ttft_seconds",
 			Help:    "Time to the first upstream response byte.",
 			Buckets: latencyBuckets,
-		}, []string{"model", "target"}),
+		}, []string{"route", "target"}),
 		StreamDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "plainroute_stream_duration_seconds",
 			Help:    "Duration of a streamed response.",
 			Buckets: latencyBuckets,
-		}, []string{"model", "target"}),
+		}, []string{"route", "target"}),
 		BytesStreamed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_bytes_streamed_total",
 			Help: "Response bytes copied to clients, per target.",
-		}, []string{"model", "target"}),
+		}, []string{"route", "target"}),
 		UpstreamErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_upstream_errors_total",
 			Help: "Upstream failures by kind: status, transport, timeout, stream_idle.",
-		}, []string{"model", "target", "kind"}),
+		}, []string{"route", "target", "kind"}),
 		ClientDisconnects: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_client_disconnects_total",
 			Help: "Clients that went away before the response finished.",
-		}, []string{"model", "target"}),
+		}, []string{"route", "target"}),
 		StreamAborts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_stream_aborts_total",
 			Help: "Streams ended by a gateway condition instead of a normal close.",
-		}, []string{"model", "target", "reason"}),
+		}, []string{"route", "target", "reason"}),
 		GatewayRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_gateway_rejected_total",
 			Help: "Requests answered by the gateway itself, without an upstream call.",

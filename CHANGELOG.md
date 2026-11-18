@@ -9,6 +9,39 @@ as done until the tests, the race detector and the end-to-end script pass.
 PlainRoute does not promise an API beyond the OpenAI-compatible endpoints it serves and the
 metric names it exposes. Changing a metric name is a breaking change and goes in the changelog.
 
+## Unreleased
+
+### Breaking changes
+
+- The top level key is `routes:` and not `models:`. A route is the name a client sends in the
+  `model` field, and the model belongs to each target, so one route can be served by several
+  models. `upstream_model` is gone: each target carries `model`.
+- `deployments:` is `targets:`. A target is one upstream entry: a model, a base URL, one key,
+  and its own path, headers and `max_active`. Two targets can differ by any of those, so
+  "same model, different key" is one case of a target and not its definition.
+- Metric labels are `{route,target}` where they were `{model,deployment}`, and
+  `plainroute_deployment_in_cooldown` is `plainroute_target_in_cooldown`.
+- Log fields: `model` is now `route` (the name the client sent), `upstream_model` is now
+  `model` (the model of the target that was picked), and `deployment` is now `target`.
+- The error code `all_deployments_cooling_down` is `all_targets_cooling_down`. The other
+  names were renamed by word boundary, which cannot match this one because it is a single
+  underscore-joined token, so it had to be applied separately.
+- `/v1/models` reports route names, the distinct model names behind each one, and the target
+  count. `aliased_of` is gone: a name can now stand for several models, so there is nothing
+  for it to point at. When a route has one model and that model is the route name, `models`
+  is left out because it would only repeat the id.
+- Lookup accepts route names only, so a request that names a model is a 404 with
+  `code: model_not_found`. Looking up by upstream model name was possible only while one name
+  mapped to exactly one model. A model can now sit behind several routes, and any rule for
+  choosing between them would not be predictable from the config.
+
+### Behaviour
+
+- Load balancing now covers targets that can differ by more than the key: model, endpoint,
+  path, headers and `max_active` are all per target. The set behind one route name is the set
+  that gets balanced; two route names are never balanced against each other, and one reaches
+  the other only through a configured fallback.
+
 ## 0.1.0
 
 Released for the first publish. Everything below was checked by tests, the race detector, or

@@ -81,7 +81,7 @@ func main() {
 
 	fields := []any{
 		"listen", cfg.Server.Listen,
-		"models", len(cfg.Models),
+		"routes", len(cfg.Routes),
 		"strategy", cfg.Routing.Strategy,
 		"retry_enabled", cfg.Retry.Enabled,
 		"stream_idle", cfg.Timeouts.StreamIdle.String(),
@@ -130,7 +130,7 @@ func main() {
 				continue
 			}
 			handler.Reload(reloaded)
-			log.Info("config_reloaded", "models", len(reloaded.Models))
+			log.Info("config_reloaded", "routes", len(reloaded.Routes))
 		case <-ctx.Done():
 			// Drain: stop taking new requests, then let the requests already
 			// streaming finish within the grace period.

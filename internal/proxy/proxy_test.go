@@ -118,11 +118,11 @@ func (h *harness) attemptsMetric(model, target, class string) float64 {
 // produced must arrive unchanged, in order, including [DONE].
 func TestStreamIsByteForByte(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   demo:
-    upstream_model: provider/model-one
     targets:
       - name: a
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})
@@ -154,11 +154,11 @@ models:
 
 func TestToolCallStreamPassesThroughUnchanged(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   demo:
-    upstream_model: provider/model-one
     targets:
       - name: a
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})
@@ -189,14 +189,15 @@ models:
 // error, and only the next independent request uses another target.
 func Test429CooldownAndNoInternalRetry(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   demo:
-    upstream_model: provider/model-one
     targets:
       - name: account-1
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
       - name: account-2
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_B
 `, config.Env{"KEY_A": "key-a", "KEY_B": "key-b"})
@@ -244,14 +245,15 @@ models:
 
 func TestRetryAfterFromUpstreamWins(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
       - name: b
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_B
 routing:
@@ -290,11 +292,11 @@ routing:
 
 func TestInvalidRetryAfterFallsBackToConfiguredCooldown(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 routing:
@@ -326,11 +328,11 @@ routing:
 
 func TestHugeRetryAfterIsCapped(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 routing:
@@ -353,20 +355,23 @@ routing:
 // first.
 func TestAllCoolingDoesNotTouchUpstream(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   demo:
-    upstream_model: provider/model-one
     targets:
       - name: a
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
       - name: b
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_B
       - name: c
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_C
       - name: d
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_D
 `, config.Env{"KEY_A": "key-a", "KEY_B": "key-b", "KEY_C": "key-c", "KEY_D": "key-d"})
@@ -404,7 +409,7 @@ models:
 	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
 		t.Fatalf("error body is not JSON: %v (%s)", err, body)
 	}
-	if envelope.Error.Code != "all_deployments_cooling_down" || envelope.Error.Type != "rate_limit_error" {
+	if envelope.Error.Code != "all_targets_cooling_down" || envelope.Error.Type != "rate_limit_error" {
 		t.Errorf("error shape: %+v", envelope.Error)
 	}
 	if envelope.Error.Message != "No healthy targets are currently available" {
@@ -427,20 +432,23 @@ models:
 // never become more than 50 upstream attempts.
 func TestNoRetryAmplification(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   demo:
-    upstream_model: provider/model-one
     targets:
       - name: a
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
       - name: b
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_B
       - name: c
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_C
       - name: d
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_D
 retry:
@@ -488,11 +496,11 @@ retry:
 func TestErrorStatusesAreForwardedWithoutRetry(t *testing.T) {
 	for _, code := range []int{500, 503} {
 		h := newHarness(t, fmt.Sprintf(`
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 routing:
@@ -517,11 +525,11 @@ routing:
 
 func TestModelAliasAndRawBodyArePreserved(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   demo:
-    upstream_model: provider/model-one
     targets:
       - name: a
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})
@@ -557,13 +565,59 @@ models:
 	}
 }
 
-func TestLogsDoNotContainKeysOrPrompts(t *testing.T) {
+func TestEachTargetSendsItsOwnModelName(t *testing.T) {
 	h := newHarness(t, `
-models:
-  m:
-    upstream_model: m
+routing:
+  strategy: round_robin
+
+routes:
+  one-name:
     targets:
       - name: a
+        model: provider/model-one
+        base_url: https://fake.invalid/v1
+        api_key_env: KEY_A
+      - name: b
+        model: provider/model-two
+        base_url: https://fake.invalid/v1
+        api_key_env: KEY_B
+`, config.Env{"KEY_A": "key-a", "KEY_B": "key-b"})
+
+	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
+	h.fake.Set("key-b", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
+
+	// round_robin is what makes the two requests land on the two targets. Under
+	// least_active, sequential requests never overlap, so every tie goes to config order
+	// and one target answers all of them.
+	for range 2 {
+		resp, _ := h.post(`{"model":"one-name","messages":[{"role":"user","content":"hi"}]}`)
+		if resp.StatusCode != 200 {
+			t.Fatalf("status: got %d", resp.StatusCode)
+		}
+	}
+
+	for key, want := range map[string]string{
+		"key-a": "provider/model-one",
+		"key-b": "provider/model-two",
+	} {
+		sent := h.fake.LastBody(key)
+		var parsed map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(sent), &parsed); err != nil {
+			t.Fatalf("upstream received invalid JSON: %s", sent)
+		}
+		if string(parsed["model"]) != `"`+want+`"` {
+			t.Errorf("%s: the model sent upstream is %s, want %s", key, parsed["model"], want)
+		}
+	}
+}
+
+func TestLogsDoNotContainKeysOrPrompts(t *testing.T) {
+	h := newHarness(t, `
+routes:
+  m:
+    targets:
+      - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "super-secret-key-12345"})
@@ -590,11 +644,11 @@ models:
 
 func TestUnknownModelAndBadJSON(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})
@@ -646,11 +700,11 @@ func (f *failingWriter) Write([]byte) (int, error) { return 0, f.err }
 
 func TestFailedWriteIsRecordedAsClientGone(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})
@@ -661,7 +715,7 @@ models:
 		t.Fatalf("new request: %v", err)
 	}
 
-	h.handler.reject(w, req, http.StatusTooManyRequests, "all_deployments_cooling_down",
+	h.handler.reject(w, req, http.StatusTooManyRequests, "all_targets_cooling_down",
 		"rate_limit_error", "No healthy targets are currently available", "m", "test-id")
 
 	if got := testutil.ToFloat64(h.metrics.ClientDisconnects.WithLabelValues("m", metrics.NoTarget)); got != 1 {
@@ -674,11 +728,11 @@ models:
 
 func TestHealthAndReadinessSurviveCooldown(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})
@@ -702,18 +756,25 @@ models:
 	}
 }
 
-func TestModelsListingUsesAliasesAndRealNames(t *testing.T) {
+func TestModelsListingReportsRoutesAndTheirModels(t *testing.T) {
 	h := newHarness(t, `
-models:
-  demo:
-    upstream_model: provider/model-one
+routes:
+  mixed:
     targets:
       - name: a
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
       - name: b
+        model: provider/model-two
         base_url: https://fake.invalid/v1
         api_key_env: KEY_B
+  qwen3:8b:
+    targets:
+      - name: local
+        model: qwen3:8b
+        base_url: https://fake.invalid/v1
+        api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a", "KEY_B": "key-b"})
 
 	resp, body := h.get("/v1/models")
@@ -723,7 +784,9 @@ models:
 	var listing struct {
 		Object string `json:"object"`
 		Data   []struct {
-			ID string `json:"id"`
+			ID      string   `json:"id"`
+			Models  []string `json:"models"`
+			Targets int      `json:"targets"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(body), &listing); err != nil {
@@ -731,15 +794,25 @@ models:
 	}
 	if listing.Object != "list" || len(listing.Data) != 2 {
 		t.Errorf("listing: got %s", body)
-	}
-	if listing.Data[0].ID != "demo" || listing.Data[1].ID != "provider/model-one" {
-		t.Errorf("listing order: got %s", body)
+		return
 	}
 
-	// Requesting the real model name must work as well as the alias.
+	// Route names in sorted order. mixed has two models behind one name, so the listing has to say
+	// them; qwen3:8b has one model and that model is the route name, so models would only repeat
+	// the id and is left out.
+	if listing.Data[0].ID != "mixed" || len(listing.Data[0].Models) != 2 ||
+		listing.Data[0].Models[0] != "provider/model-one" || listing.Data[0].Models[1] != "provider/model-two" ||
+		listing.Data[0].Targets != 2 {
+		t.Errorf("route with two models: got %s", body)
+	}
+	if listing.Data[1].ID != "qwen3:8b" || listing.Data[1].Models != nil || listing.Data[1].Targets != 1 {
+		t.Errorf("route with one model: got %s", body)
+	}
+
+	// A model name is not a route name, so it is not a name a client can send.
 	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
 	resp, _ = h.post(chatBody("provider/model-one"))
-	if resp.StatusCode != 200 {
-		t.Errorf("real model name request: got %d", resp.StatusCode)
+	if resp.StatusCode != 404 {
+		t.Errorf("model name request: got %d, want 404", resp.StatusCode)
 	}
 }

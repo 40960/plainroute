@@ -4,16 +4,19 @@
 
 > **A small, boring, transparent LLM gateway.**
 
-PlainRoute is an OpenAI-compatible HTTP gateway in front of one or more targets of
-the same model. It routes a request to a target, sends the body it received, copies
-the response bytes back, and reports what happened. It does not rewrite the response,
-does not retry on its own, and does not grow features that touch the streaming path.
+PlainRoute is an OpenAI-compatible HTTP gateway in front of one or more targets. A
+client sends a route name, the gateway picks one target, sends the body it received,
+copies the response bytes back, and reports what happened. It does not rewrite the
+response, does not retry on its own, and does not grow features that touch the
+streaming path.
 
-A target is one upstream entry: a base URL, one key read from the environment,
-and its own endpoint path, headers and concurrency limit. The model name comes from
-the model entry, not from the target, so the targets under one name all
-serve that name. Different names are not balanced against each other; a different
-model is reached only through a configured fallback.
+A target is one upstream entry: a model name, a base URL, one key read from the
+environment, and its own endpoint path, headers and concurrency limit. Two targets
+differ by any of them: "same model, different key" is one case, not the definition.
+
+The targets behind one route name are balanced against each other. Different route
+names are not balanced against each other, and one route reaches another only
+through a configured fallback.
 
 This project intentionally has a smaller scope and avoids modifying streaming responses
 whenever possible.
@@ -25,15 +28,20 @@ endorsement or an affiliation.
 ## What it does
 
 - One upstream attempt per client request. Never more.
-- Load balancing across targets of the same model: one selection per request,
+- Load balancing across targets behind one route name: one selection per request,
   `least_active` by default or `round_robin`, and ties keep config order. There is
-  no failover inside a single request.
+  no failover inside a single request, and no balancing between two route names.
 - Per-target cooldown: a target that returned a status code is taken out of the
   pool for the configured time, or for the upstream's own `Retry-After`, whichever is
   shorter than the configured maximum.
-- Model alias mapping: the name a client sends can map to the real name the upstream
-  expects. Only that one field changes, and it changes by splicing bytes into the
-  original document rather than re-serialising it.
+- Model name mapping: the model name comes from the target that was picked, and the
+  `model` field in the request body is the only field PlainRoute changes. It changes by
+  splicing bytes into the original document rather than re-serialising it.
+  The response is never rewritten, so the model a client reads back is the one the
+  upstream wrote, which is not necessarily the name the client sent.
+- `/v1/models` reports route names, the distinct model names behind each, and the
+  target count. A route name is what a client sends in the `model` field, and it is not
+  necessarily a model name.
 - Streaming responses are copied chunk by chunk and flushed per chunk, so the bytes the
   upstream produced arrive as the bytes the client receives.
 - Structured logs, Prometheus metrics, health and readiness endpoints, SIGHUP reload,
@@ -56,7 +64,7 @@ things cannot promise what the client asked for, and it cannot promise that one 
 did not become five requests.
 
 PlainRoute exists for the case where you want the boring thing: many accounts or
-targets behind one name, a key that got rate limited is taken out of the pool, the
+targets behind one route name, a key that got rate limited is taken out of the pool, the
 response is what the provider sent. If a gateway answers a request the provider answered
 successfully, that is a bug in this project.
 
@@ -81,31 +89,63 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
 Keys are read from the environment. Nothing that looks like a secret belongs in a config
 file, and the gateway never writes a key into a log line.
 
-## Model name mapping example
+## Route names and model names
 
 ```yaml
-models:
+routes:
   demo:
-    upstream_model: provider/model-one
     targets:
       - name: account-1
+        model: provider/model-one
         base_url: https://api.example.com/v1
         api_key_env: EXAMPLE_API_KEY_1
         max_active: 4
       - name: account-2
+        model: provider/model-one
         base_url: https://api.example.com/v1
         api_key_env: EXAMPLE_API_KEY_2
         max_active: 4
 ```
 
-A client asks for `demo`. The gateway sends `provider/model-one` and the key from the
-environment variable of the target it picked. The response comes back as the provider
-produced it.
+A client asks for `demo`, which is a route name. The gateway picks a target, sends
+`provider/model-one` with that target's key, and the response comes back as the provider
+produced it. The model name in the response is the one the provider wrote, not the one
+the gateway chose.
+
+Because the model belongs to the target, one route name can be served by several
+different models:
+
+```yaml
+routes:
+  fast:
+    targets:
+      - name: via-a
+        model: provider/model-one
+        base_url: https://api.example.com/v1
+        api_key_env: EXAMPLE_API_KEY_1
+      - name: via-b
+        model: provider/model-two
+        base_url: https://api.other.example/v1
+        api_key_env: EXAMPLE_API_KEY_2
+```
+
+Which model answers is the model of the target that was picked, and `/v1/models` reports a
+route name together with the distinct model names behind it:
+
+```json
+{"id": "fast", "models": ["provider/model-one", "provider/model-two"], "targets": 2}
+```
+
+A name that is not a configured route is a 404 with `code: model_not_found`. Lookup
+accepts route names only: it used to accept the upstream model name as well, which was
+possible only while one name mapped to exactly one model. A target carries its own model
+now, so the same model can sit behind several routes, and any rule for choosing between
+them would be unpredictable from the config.
 
 ## Multiple accounts example
 
-Two accounts for the same model, with a cooldown that keeps a limited account out of the
-pool:
+Two keys for one model behind one route name, with a cooldown that keeps a limited key out
+of the pool:
 
 ```yaml
 routing:
@@ -118,14 +158,15 @@ routing:
     max: 5m
     timeout: 30s                  # 0 disables cooling after a connection failure
 
-models:
+routes:
   chat:
-    upstream_model: gpt-4o-mini
     targets:
       - name: work
+        model: gpt-4o-mini
         base_url: https://api.openai.com/v1
         api_key_env: OPENAI_WORK_KEY
       - name: personal
+        model: gpt-4o-mini
         base_url: https://api.openai.com/v1
         api_key_env: OPENAI_PERSONAL_KEY
 
@@ -143,11 +184,11 @@ paragraph, and there is a test and an end-to-end script that check it.
 Anything that speaks the OpenAI shape works, including a local server:
 
 ```yaml
-models:
+routes:
   local:
-    upstream_model: qwen3:8b
     targets:
       - name: ollama
+        model: qwen3:8b
         base_url: http://127.0.0.1:11434/v1
         api_key_env: LOCAL_KEY    # any value; the key is still what identifies the target
 ```
@@ -183,7 +224,7 @@ auth:
   pages carry counts only.
 - A rejection is the OpenAI error shape: 401, `code: invalid_api_key`,
   `type: authentication_error`. Rejections are counted in
-  `plainroute_gateway_rejected_total{model="none",code="invalid_api_key"}`, the family of
+  `plainroute_gateway_rejected_total{route="none",code="invalid_api_key"}`, the family of
   requests the gateway answered from its own state.
 - One key is not accounts. Knowing which caller is which would need a table of keys, and a
   table of keys is the point this project stays out of.
@@ -203,9 +244,10 @@ auth:
   upstream wins when it is present. The value is clamped by `routing.cooldown.max` so a
   hostile or broken upstream value cannot make a target unavailable for an
   unreasonable time. An unparseable `Retry-After` falls back to the configured duration.
-- When every target for a model is cooling, the gateway does not contact an upstream.
-  It answers 429 with the OpenAI error shape and `code: all_deployments_cooling_down`,
-  and `Retry-After` is the recovery time of the target that recovers first.
+- When every target behind a route name is cooling, the gateway does not contact an
+  upstream. It answers 429 with the OpenAI error shape and
+  `code: all_targets_cooling_down`, and `Retry-After` is the recovery time of the target
+  that recovers first.
 - The `Retry-After` the gateway sends is the window it actually applied, not whatever the
   upstream printed.
 - The gateway does not follow redirects. Upstream URLs come from config only, so a
@@ -254,19 +296,19 @@ upstream attempts, and the metrics must report the same numbers.
 
 | Metric | What it is |
 | --- | --- |
-| `plainroute_requests_total{model,target,status_class}` | Client requests handled |
-| `plainroute_upstream_attempts_total{model,target,status_class}` | Upstream requests actually sent |
-| `plainroute_active_requests{model,target}` | Requests in flight per target |
-| `plainroute_target_in_cooldown{model,target}` | 1 while a target is cooling |
-| `plainroute_cooldown_events_total{model,target,reason}` | Times a target was cooled down |
-| `plainroute_request_duration_seconds{model,target,stream}` | End to end duration, per request |
-| `plainroute_ttft_seconds{model,target}` | Time to the first upstream byte |
-| `plainroute_stream_duration_seconds{model,target}` | Duration of a streamed response |
-| `plainroute_bytes_streamed_total{model,target}` | Bytes copied to clients |
-| `plainroute_upstream_errors_total{model,target,kind}` | Upstream failures by kind |
-| `plainroute_client_disconnects_total{model,target}` | Clients that went away |
-| `plainroute_stream_aborts_total{model,target,reason}` | Streams ended by the gateway |
-| `plainroute_gateway_rejected_total{model,code}` | Requests the gateway answered from its own state |
+| `plainroute_requests_total{route,target,status_class}` | Client requests handled |
+| `plainroute_upstream_attempts_total{route,target,status_class}` | Upstream requests actually sent |
+| `plainroute_active_requests{route,target}` | Requests in flight per target |
+| `plainroute_target_in_cooldown{route,target}` | 1 while a target is cooling |
+| `plainroute_cooldown_events_total{route,target,reason}` | Times a target was cooled down |
+| `plainroute_request_duration_seconds{route,target,stream}` | End to end duration, per request |
+| `plainroute_ttft_seconds{route,target}` | Time to the first upstream byte |
+| `plainroute_stream_duration_seconds{route,target}` | Duration of a streamed response |
+| `plainroute_bytes_streamed_total{route,target}` | Bytes copied to clients |
+| `plainroute_upstream_errors_total{route,target,kind}` | Upstream failures by kind |
+| `plainroute_client_disconnects_total{route,target}` | Clients that went away |
+| `plainroute_stream_aborts_total{route,target,reason}` | Streams ended by the gateway |
+| `plainroute_gateway_rejected_total{route,code}` | Requests the gateway answered from its own state |
 | `plainroute_config_reloads_total{outcome}` | SIGHUP reloads, by outcome |
 | `plainroute_in_flight_requests` | Requests being handled right now |
 | `go_goroutines`, `go_memstats_heap_alloc_bytes`, `process_resident_memory_bytes` | The process itself |
@@ -277,13 +319,13 @@ the requests the gateway answered itself. `cmd/bench` reads these numbers from t
 rather than counting them on the client, and fails if they disagree.
 
 When the api key gate is on, its rejections are part of that difference: they are counted by
-the gateway from its own state, with `model="none"` and `code="invalid_api_key"`, and no
+the gateway from its own state, with `route="none"` and `code="invalid_api_key"`, and no
 upstream is contacted.
 
-Logs carry routing facts only: request id, logical model, upstream model, target,
-status, duration, time to first byte, bytes streamed, cooldown events, disconnects. There is
-no field in the logging package that could hold a key, a prompt or a response body, so a
-log line cannot leak one by accident.
+Logs carry routing facts only: request id, route name, the model the selected target
+serves, target name, status, duration, time to first byte, bytes streamed, cooldown events,
+disconnects. There is no field in the logging package that could hold a key, a prompt or a
+response body, so a log line cannot leak one by accident.
 
 ## Docker
 
@@ -366,10 +408,14 @@ Known and deliberate. These are not bugs to be fixed by adding complexity:
 
 ## Troubleshooting
 
-**Every request gets 429 from the gateway with `all_deployments_cooling_down`.** The
+**Every request gets 429 from the gateway with `all_targets_cooling_down`.** The
 gateway is answering from its own state, not from a provider. Look at `Retry-After`: it is
 the recovery time of the target that recovers first. If the window is longer than you
 expected, the upstream sent a big `Retry-After`, and `routing.cooldown.max` clamped it.
+
+**A request gets 404 with `model_not_found`.** The value in the `model` field is read as a
+route name, not as a model name, so the exact model name a target carries is not a name a
+client can send. `/v1/models` lists the route names and the model names behind each one.
 
 **A stream ends without `[DONE]`.** The upstream stopped sending. The gateway does not
 invent a closing frame. Check `plainroute_stream_aborts_total` and the log line with

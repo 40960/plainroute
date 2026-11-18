@@ -20,11 +20,11 @@ import (
 
 func TestRedirectIsNotFollowed(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})
@@ -92,11 +92,11 @@ models:
 // anywhere on the page, and neither must prompt content.
 func TestMetricsPageCarriesNoSecret(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "super-secret-key-value"})
@@ -123,11 +123,11 @@ models:
 // field, and the request still goes to the configured host.
 func TestBodyFieldsCannotChooseTheUpstreamHost(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})

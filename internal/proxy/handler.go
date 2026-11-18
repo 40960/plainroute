@@ -17,6 +17,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -152,41 +153,45 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *conf
 	id := requestID(r)
 	h.metrics.GatewayRejected.WithLabelValues("all", "models_list").Inc()
 
-	type modelEntry struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		OwnedBy string `json:"owned_by"`
-		AliasOf string `json:"aliased_of,omitempty"`
-		Targets int    `json:"targets"`
+	// A route entry is the name a client can send. It is not a model: the models belong to the
+	// targets, so the listing reports the name and the distinct models it can be served by. When a
+	// route has one model and that model is the route name, models is left out because it would
+	// only repeat the id.
+	type routeEntry struct {
+		ID      string   `json:"id"`
+		Object  string   `json:"object"`
+		Created int64    `json:"created"`
+		OwnedBy string   `json:"owned_by"`
+		Models  []string `json:"models,omitempty"`
+		Targets int      `json:"targets"`
 	}
 
 	created := h.started.Unix()
-	entries := make([]modelEntry, 0)
-	seen := map[string]bool{}
+	entries := make([]routeEntry, 0)
 
 	for _, pool := range h.Registry().Pools() {
-		if !seen[pool.Model] {
-			seen[pool.Model] = true
-			entries = append(entries, modelEntry{
-				ID:      pool.Model,
-				Object:  "model",
-				Created: created,
-				OwnedBy: "plainroute",
-				Targets: len(pool.Targets),
-			})
+		seenModel := map[string]bool{}
+		models := make([]string, 0, len(pool.Targets))
+		for _, t := range pool.Targets {
+			if !seenModel[t.Model] {
+				seenModel[t.Model] = true
+				models = append(models, t.Model)
+			}
 		}
-		if pool.UpstreamModel != pool.Model && !seen[pool.UpstreamModel] {
-			seen[pool.UpstreamModel] = true
-			entries = append(entries, modelEntry{
-				ID:      pool.UpstreamModel,
-				Object:  "model",
-				Created: created,
-				OwnedBy: "plainroute",
-				AliasOf: pool.Model,
-				Targets: len(pool.Targets),
-			})
+		sort.Strings(models)
+
+		entry := routeEntry{
+			ID:      pool.Route,
+			Object:  "model",
+			Created: created,
+			OwnedBy: "plainroute",
+			Models:  models,
+			Targets: len(pool.Targets),
 		}
+		if len(models) == 1 && models[0] == pool.Route {
+			entry.Models = nil
+		}
+		entries = append(entries, entry)
 	}
 
 	body, err := json.Marshal(map[string]any{"object": "list", "data": entries})
@@ -247,7 +252,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 	if !ok {
 		h.metrics.GatewayRejected.WithLabelValues(peek.Model, "model_not_found").Inc()
 		h.reject(w, r, http.StatusNotFound, "model_not_found", "invalid_request_error",
-			"model "+peek.Model+" is not configured", metrics.NoTarget, id)
+			"model "+peek.Model+" is not a configured route", metrics.NoTarget, id)
 		return
 	}
 
@@ -257,15 +262,15 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 	// picked inside that route.
 	chain := []*routing.Pool{primary}
 	if cfg.Fallback.Enabled {
-		seen := map[string]bool{primary.Model: true}
+		seen := map[string]bool{primary.Route: true}
 		current := primary
 		for len(chain) <= cfg.Fallback.MaxHops && len(current.Fallbacks) > 0 {
 			next, ok := h.Registry().Lookup(current.Fallbacks[0])
-			if !ok || seen[next.Model] {
+			if !ok || seen[next.Route] {
 				break
 			}
 			chain = append(chain, next)
-			seen[next.Model] = true
+			seen[next.Route] = true
 			current = next
 		}
 	}
@@ -288,8 +293,8 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 
 		h.log.Warn("model_fallback",
 			"request_id", id,
-			"from_model", pool.Model,
-			"to_model", chain[i+1].Model,
+			"from_route", pool.Route,
+			"to_model", chain[i+1].Route,
 			"target", target.Name,
 			"reason", result.kind,
 		)
@@ -309,20 +314,20 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 		remaining = cfg.Routing.Cooldown.Status[429].Std()
 	}
 	w.Header().Set("Retry-After", retryAfterSeconds(remaining))
-	h.metrics.GatewayRejected.WithLabelValues(lastUnavailable.Model, "all_deployments_cooling_down").Inc()
-	h.reject(w, r, http.StatusTooManyRequests, "all_deployments_cooling_down", "rate_limit_error",
+	h.metrics.GatewayRejected.WithLabelValues(lastUnavailable.Route, "all_targets_cooling_down").Inc()
+	h.reject(w, r, http.StatusTooManyRequests, "all_targets_cooling_down", "rate_limit_error",
 		"No healthy targets are currently available", metrics.NoTarget, id)
 }
 
-func (h *Handler) reject(w http.ResponseWriter, r *http.Request, status int, code, typ, message, model, id string) {
-	h.metrics.RequestsTotal.WithLabelValues(model, metrics.NoTarget, metrics.StatusClass(status)).Inc()
-	h.log.Warn("gateway_response", "request_id", id, "model", model, "status", status, "code", code)
+func (h *Handler) reject(w http.ResponseWriter, r *http.Request, status int, code, typ, message, route, id string) {
+	h.metrics.RequestsTotal.WithLabelValues(route, metrics.NoTarget, metrics.StatusClass(status)).Inc()
+	h.log.Warn("gateway_response", "request_id", id, "route", route, "status", status, "code", code)
 	if id != "" {
 		w.Header().Set("X-Request-Id", id)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	h.writeToClient(w, errorBody(message, typ, code), model, metrics.NoTarget, id)
+	h.writeToClient(w, errorBody(message, typ, code), route, metrics.NoTarget, id)
 }
 
 // authorize checks the api key a caller presents, and is reached only for the API endpoints.
@@ -342,26 +347,26 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, cfg *config.
 		return true
 	}
 
-	h.metrics.GatewayRejected.WithLabelValues(metrics.NoModel, "invalid_api_key").Inc()
+	h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "invalid_api_key").Inc()
 	h.log.Warn("unauthenticated_request", "request_id", id, "path", r.URL.Path)
 	h.reject(w, r, http.StatusUnauthorized, "invalid_api_key", "authentication_error",
-		"invalid api key", metrics.NoModel, id)
+		"invalid api key", metrics.NoRoute, id)
 	return false
 }
 
 func (h *Handler) status(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
-	h.writeToClient(w, []byte(message+"\n"), metrics.NoModel, metrics.NoTarget, "")
+	h.writeToClient(w, []byte(message+"\n"), metrics.NoRoute, metrics.NoTarget, "")
 }
 
 // writeToClient writes a body the gateway produced itself. A failed write means the
 // client went away before the answer arrived, so it is recorded the same way as a
 // disconnect anywhere else in the request path.
-func (h *Handler) writeToClient(w http.ResponseWriter, body []byte, model, target, id string) {
+func (h *Handler) writeToClient(w http.ResponseWriter, body []byte, route, target, id string) {
 	if _, err := w.Write(body); err != nil {
-		h.metrics.ClientDisconnects.WithLabelValues(model, target).Inc()
-		h.log.Warn("client_disconnect", "request_id", id, "model", model,
+		h.metrics.ClientDisconnects.WithLabelValues(route, target).Inc()
+		h.log.Warn("client_disconnect", "request_id", id, "route", route,
 			"target", target, "error", err)
 	}
 }

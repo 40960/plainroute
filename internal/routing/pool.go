@@ -16,16 +16,15 @@ import (
 	"github.com/40960/plainroute/internal/config"
 )
 
-// Target is one upstream endpoint with one key.
+// Target is one upstream: a model name, an endpoint and one key.
 type Target struct {
-	Name          string
-	Model         string // logical model, the alias the client used
-	UpstreamModel string // model name sent upstream
-	BaseURL       string
-	Endpoint      string
-	APIKey        string
-	Headers       map[string]string
-	MaxActive     int
+	Name      string
+	Model     string // the model this target serves
+	BaseURL   string
+	Endpoint  string
+	APIKey    string
+	Headers   map[string]string
+	MaxActive int
 
 	state *State
 }
@@ -40,7 +39,7 @@ func (t *Target) Active() int { return t.state.Active() }
 func (t *Target) Available() bool { return t.state.Available(t.MaxActive, time.Now()) }
 
 // State is the runtime state of a target: requests in flight and whether it
-// is cooling down. It is keyed by model and target name, so a configuration
+// is cooling down. It is keyed by route and target name, so a configuration
 // reload keeps the cooldown of a target that is still configured.
 type State struct {
 	mu             sync.Mutex
@@ -123,7 +122,7 @@ func (s *State) Reason() string {
 	return s.cooldownReason
 }
 
-// StateStore hands out the same *State for the same model and target name
+// StateStore hands out the same *State for the same route and target name
 // across configuration reloads.
 type StateStore struct {
 	mu     sync.Mutex
@@ -134,8 +133,8 @@ func NewStateStore() *StateStore {
 	return &StateStore{states: map[string]*State{}}
 }
 
-func (s *StateStore) Get(model, name string) *State {
-	key := model + "\x00" + name
+func (s *StateStore) Get(route, name string) *State {
+	key := route + "\x00" + name
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if st, ok := s.states[key]; ok {
@@ -146,12 +145,11 @@ func (s *StateStore) Get(model, name string) *State {
 	return st
 }
 
-// Pool is the set of targets behind one logical model.
+// Pool is the set of selectable targets behind one route name.
 type Pool struct {
-	Model         string
-	UpstreamModel string
-	Targets       []*Target
-	Fallbacks     []string
+	Route     string
+	Targets   []*Target
+	Fallbacks []string
 
 	strategy string
 	mu       sync.Mutex
@@ -161,7 +159,7 @@ type Pool struct {
 
 // Status is a snapshot used for logging and metrics.
 type Status struct {
-	Model     string
+	Route     string
 	Target    string
 	Active    int
 	Cooling   bool
@@ -258,7 +256,7 @@ func (p *Pool) Snapshot() []Status {
 	for _, t := range p.Targets {
 		remaining, cooling := t.state.Remaining(now)
 		out = append(out, Status{
-			Model:     p.Model,
+			Route:     p.Route,
 			Target:    t.Name,
 			Active:    t.state.Active(),
 			Cooling:   cooling,

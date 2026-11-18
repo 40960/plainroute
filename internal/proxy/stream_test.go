@@ -23,11 +23,11 @@ import (
 // the proof, so the margins are wide enough not to fail on a loaded machine.
 func TestFlushHappensPerChunk(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})
@@ -77,11 +77,11 @@ models:
 // overall request timeout: the only streaming limit is the idle timeout.
 func TestSlowStreamSurvives(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 timeouts:
@@ -131,11 +131,11 @@ timeouts:
 // frame to close the stream: the response simply ends with what it received.
 func TestStreamIdleTimeoutEndsTheRequest(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 timeouts:
@@ -183,11 +183,11 @@ routing:
 // gateway itself cancelled the request.
 func TestIdleBeforeFirstByteIsNotAClientDisconnect(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 timeouts:
@@ -219,11 +219,11 @@ timeouts:
 // cancels the upstream request and releases the active counter.
 func TestClientDisconnectCancelsUpstream(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})
@@ -275,14 +275,15 @@ models:
 // left behind: no active counters, no goroutines still sitting in the request path.
 func TestNoGoroutineLeak(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
       - name: b
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_B
 timeouts:
@@ -377,11 +378,11 @@ func TestFuzzLikeInputs(t *testing.T) {
 
 	for _, c := range cases {
 		h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 timeouts:
@@ -418,11 +419,11 @@ timeouts:
 // completion. The frames that arrived reach the client, and the way it ended is recorded.
 func TestUpstreamClosingMidStreamIsNotReportedAsSuccess(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 timeouts:
@@ -460,11 +461,11 @@ func TestResponseLimitStopsCopying(t *testing.T) {
 	h := newHarness(t, `
 server:
   max_response_bytes: 200
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})
@@ -500,11 +501,11 @@ func TestRequestBodyTooLarge(t *testing.T) {
 	h := newHarness(t, `
 server:
   max_request_bytes: 512
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})
@@ -528,20 +529,23 @@ models:
 // simultaneous requests, checked under the race detector.
 func TestConcurrentRequests(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   demo:
-    upstream_model: provider/model-one
     targets:
       - name: a
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
       - name: b
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_B
       - name: c
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_C
       - name: d
+        model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key_env: KEY_D
 `, config.Env{"KEY_A": "key-a", "KEY_B": "key-b", "KEY_C": "key-c", "KEY_D": "key-d"})
@@ -610,11 +614,11 @@ models:
 // stream gets the grace period to finish.
 func TestGracefulShutdownDrains(t *testing.T) {
 	h := newHarness(t, `
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://fake.invalid/v1
         api_key_env: KEY_A
 `, config.Env{"KEY_A": "key-a"})

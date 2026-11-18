@@ -13,11 +13,11 @@ import (
 
 func TestCallerKeyIsOffWhenNothingIsConfigured(t *testing.T) {
 	cfg, err := Parse([]byte(`
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://example.invalid/v1
         api_key_env: DEPLOYMENT_KEY
 `), Env{"DEPLOYMENT_KEY": "target-key"})
@@ -33,11 +33,11 @@ func TestCallerKeyIsResolvedFromTheEnvironment(t *testing.T) {
 	cfg, err := Parse([]byte(`
 auth:
   api_key_env: CALLER_KEY
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://example.invalid/v1
         api_key_env: DEPLOYMENT_KEY
 `), Env{"CALLER_KEY": "caller-key", "DEPLOYMENT_KEY": "target-key"})
@@ -47,7 +47,7 @@ models:
 	if cfg.Auth.APIKey != "caller-key" {
 		t.Errorf("caller key: got %q, want the value from the environment", cfg.Auth.APIKey)
 	}
-	if cfg.Models["m"].Targets[0].APIKey != "target-key" {
+	if cfg.Routes["m"].Targets[0].APIKey != "target-key" {
 		t.Errorf("the target key must stay separate from the caller key")
 	}
 }
@@ -57,11 +57,11 @@ func TestNamedCallerKeyMustExistInTheEnvironment(t *testing.T) {
 	_, err := Parse([]byte(`
 auth:
   api_key_env: CALLER_KEY
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://example.invalid/v1
         api_key_env: DEPLOYMENT_KEY
 `), Env{"DEPLOYMENT_KEY": "target-key"})
@@ -81,11 +81,11 @@ func TestCallerKeyHasOneName(t *testing.T) {
 	_, err := Parse([]byte(`
 auth:
   token: CALLER_KEY
-models:
+routes:
   m:
-    upstream_model: m
     targets:
       - name: a
+        model: m
         base_url: https://example.invalid/v1
         api_key_env: DEPLOYMENT_KEY
 `), Env{"DEPLOYMENT_KEY": "target-key"})

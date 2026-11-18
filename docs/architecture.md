@@ -22,20 +22,21 @@ ServeHTTP ── method and path check, request id
 handleChat
   1. readBody      size limit checked before anything is forwarded
   2. peekBody      read model and stream from the document, nothing else
-  3. Registry.Lookup(model)                     → pool
+  3. Registry.Lookup(route name)               → pool
   4. pool.Pick()                               → one target, or nothing
   5. attempt()                                 → exactly one upstream request
   6. copy the response bytes, flush per read chunk
   7. report what happened to metrics and the log
 ```
 
-Step 4 is the only decision the gateway makes. If nothing is selectable, the request ends
-with a 429 answered from routing state, and no upstream is contacted. If a target is
-selectable, exactly one request goes to it.
+Step 3 resolves a name, and it resolves route names only. Step 4 is the only decision the
+gateway makes, and the model name sent upstream is the model of the target it picked. If
+nothing is selectable, the request ends with a 429 answered from routing state, and no
+upstream is contacted. If a target is selectable, exactly one request goes to it.
 
 `attempt` is the function that keeps the invariant true, so it is worth reading in full.
 It has no loop over targets and no second call to itself. The only way a client request
-can produce two upstream attempts is when model fallback is explicitly configured, and then
+can produce two upstream attempts is when a route fallback is explicitly configured, and then
 the walk is bounded by `fallbacks.max_hops`.
 
 ## Packages
@@ -62,8 +63,8 @@ behaviour change, not a refactor.
 2. **A target that is cooling down is never selected.** A cooldown is recorded when a
    status code matches `routing.cooldown.status`, when a `Retry-After` arrives, or after a
    connection or idle failure when `routing.cooldown.timeout` is non-zero.
-3. **When every target for a model is cooling, no upstream call happens.** The answer
-   comes from the gateway's own state with `code: all_deployments_cooling_down`.
+3. **When every target behind a route name is cooling, no upstream call happens.** The answer
+   comes from the gateway's own state with `code: all_targets_cooling_down`.
 4. **The bytes the upstream sent are the bytes the client receives**, apart from the model
    value in the request body. Verified byte for byte, including the opening role delta,
    separate tool call deltas, and `[DONE]`.
@@ -78,9 +79,16 @@ behaviour change, not a refactor.
 
 **The model name is changed by splicing bytes, not by re-serialising.** `peekBody` records
 the byte range of the model value while it reads the document, and `withModel` replaces that
-range. Re-serialising would reorder keys, drop unknown fields, normalise numbers, and change
-the request the client sent. Only one field is allowed to differ, and the test asserts the
-rest is identical.
+range with the model of the target that was picked. Re-serialising would reorder keys, drop
+unknown fields, normalise numbers, and change the request the client sent. Only one field is
+allowed to differ, and the test asserts the rest is identical. Since the response is never
+rewritten, the model a client reads back is the one the upstream wrote, which is not
+necessarily the name the client sent.
+
+**Lookup accepts route names only.** It used to accept the real model name as well, which was
+possible only while one name mapped to exactly one model. A target carries its own model now,
+so the same model can sit behind several routes, and any rule for choosing between them would
+not be predictable from the config.
 
 **The first read happens before the response is committed.** If the upstream fails before
 sending a body, the client gets an error, not an empty 200. Once bytes are on the wire they
@@ -114,7 +122,7 @@ It is checked on the API endpoints only, before any byte of the request body is 
 not part of the streaming path and cannot change what reaches the client. The caller key and
 the target key are different things, and the tests keep them apart: a caller key that is
 accepted is never the key the upstream sees. A rejected request is counted as one the gateway
-answered from its own state, with `model="none"`. A gate that is named in the config but whose
+answered from its own state, with `route="none"`. A gate that is named in the config but whose
 variable is not set stops the process at load, because a half-configured gate reads as a
 working one. Health, readiness and the metrics page stay open, because they carry counts and a
 monitoring system that cannot authenticate is the ordinary case. A gate that can be configured
@@ -125,7 +133,7 @@ accounts would.
 unavailable for an unreasonable time, and the value the gateway forwards is the window it
 actually applied, not whatever the upstream printed.
 
-**Cooldown state survives a reload.** Target state is keyed by model and target name
+**Cooldown state survives a reload.** Target state is keyed by route and target name
 in a `StateStore`, so rebuilding the registry after a `SIGHUP` does not clear a cooldown for a
 target that is still configured. A failed reload keeps the running config, because a bad
 edit should not break a working gateway.

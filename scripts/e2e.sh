@@ -115,47 +115,51 @@ routing:
   cooldown:
     status: {429: 10s}
     max: 60s
-models:
+routes:
   stream:
-    upstream_model: stream
     targets:
       - name: streamer
+        model: stream
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_STREAM
   two:
-    upstream_model: two
     targets:
       - name: account-a
+        model: two
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_429
       - name: account-b
+        model: two
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_STREAM
   allcooling:
-    upstream_model: allcooling
     targets:
       - name: c1
+        model: allcooling
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_429
       - name: c2
+        model: allcooling
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_429
       - name: c3
+        model: allcooling
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_429
       - name: c4
+        model: allcooling
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_429
   toolcall:
-    upstream_model: toolcall
     targets:
       - name: tool
+        model: toolcall
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_TOOL
   cancel:
-    upstream_model: cancel
     targets:
       - name: cancellable
+        model: cancel
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_CANCEL
 YAML
@@ -211,7 +215,7 @@ stats
 check "status" "429" "$status"
 check "no upstream call while every target is cooling" "$before" "$(total)"
 has "Retry-After comes from the gateway's own state" 'Retry-After: 10' "$(cat "$WORK/headers.txt")"
-has "the OpenAI error shape with the routing code" 'all_deployments_cooling_down' "$(cat "$WORK/cooled.txt")"
+has "the OpenAI error shape with the routing code" 'all_targets_cooling_down' "$(cat "$WORK/cooled.txt")"
 has "the gateway was ready throughout" 'ready' "$(curl -s http://127.0.0.1:8080/readyz)"
 
 printf '\n4. tool-call streaming passes through completely\n'
@@ -258,11 +262,11 @@ printf '\n7. optional api key gate: off when nothing is configured, on when it i
 cat > "$WORK/gate-config.yaml" <<'YAML'
 server:
   listen: 127.0.0.1:8092
-models:
+routes:
   stream:
-    upstream_model: stream
     targets:
       - name: gated
+        model: stream
         base_url: http://127.0.0.1:8091/v1
         api_key_env: E2E_STREAM
 auth:
