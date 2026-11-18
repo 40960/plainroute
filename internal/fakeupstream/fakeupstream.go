@@ -399,10 +399,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(behavior.SSE) > 0 {
-		w.Header().Set("Content-Type", "text/event-stream")
-	} else {
-		w.Header().Set("Content-Type", "application/json")
+	// A behaviour that names its own Content-Type is the case where a provider answers an error
+	// with something that is not JSON. The default only applies when the behaviour named nothing,
+	// otherwise a test that checks the header the gateway forwards would be checking this server's
+	// own default instead of the proxy.
+	if w.Header().Get("Content-Type") == "" {
+		if len(behavior.SSE) > 0 {
+			w.Header().Set("Content-Type", "text/event-stream")
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+		}
 	}
 	w.WriteHeader(status)
 
@@ -449,7 +455,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(behavior.SSE) == 0 && behavior.Body != "" {
-		w.Header().Set("Content-Type", "application/json")
+		if w.Header().Get("Content-Type") == "" {
+			w.Header().Set("Content-Type", "application/json")
+		}
 		_, _ = fmt.Fprint(w, behavior.Body)
 	}
 }

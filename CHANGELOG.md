@@ -101,6 +101,25 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   hold: `build_request`, `transport`, `timeout`, `stream_idle`, `client_gone`. The metrics test
   compares the collected text, so the help text and the label names are checked, not assumed.
 
+### Tests
+
+- Provider error passthrough is covered by named shapes: what a rate limiter writes,
+  what a service writes for its content safety screener, a JSON shape this project has
+  never seen, an RFC 7807 problem document, and a body that is not JSON at all. Each
+  reaches the client with the upstream's status, the upstream's Content-Type, and the
+  bytes the upstream wrote. The status path is one comparison rather than a table of
+  known error types, so an unrecognised shape cannot become a gateway 500; 12 statuses
+  are checked on a single-target route, where an attempt count can only be the count for
+  that target.
+- The fake upstream honours a Content-Type a behaviour names instead of forcing its own
+  default. Without that, a test that checks the header the gateway forwards would be
+  checking the fake's default and not the proxy.
+- Every assertion was shown to fail once by breaking the code it reads: the status
+  write, a normaliser added to the error branch, the response header copy, a retry
+  inserted inside one request, the Retry-After clamp, and the frame copy. A check that
+  only compares a status cannot fail when that status comes from the gateway's own
+  reject branch, so the checks that matter read bytes.
+
 ## 0.1.0
 
 Released for the first publish. Everything below was checked by tests, the race detector, or
