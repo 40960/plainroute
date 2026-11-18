@@ -103,7 +103,7 @@ go build -o "$BIN/plainroute-bench" ./cmd/bench
 # A process left over from an earlier run answers the checks instead of the one this
 # script starts, so a run can pass for the wrong reason or fail for one that is not its
 # own.
-for port in 8080 8091 8092 8093 8094 8095 8096 8097 8098 8099; do
+for port in 8080 8091 8092 8093 8094 8095 8096 8097 8098 8099 8100; do
   if (exec 9<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null; then
     printf 'something is already listening on 127.0.0.1:%s. Stop it before running this script.\n' "$port" >&2
     exit 1
@@ -171,6 +171,10 @@ cat > "$WORK/behaviors.json" <<'JSON'
   "e2e-503": {
     "status": 503,
     "body": "{\"error\":{\"message\":\"content safety screening is temporarily unavailable\"}}"
+  },
+  "e2e-size": {
+    "status": 200,
+    "body": "{\"object\":\"chat.completion\",\"choices\":[]}"
   }
 }
 JSON
@@ -299,7 +303,7 @@ YAML
 
 export E2E_STREAM=e2e-stream E2E_429=e2e-429 E2E_TOOL=e2e-tool E2E_CANCEL=e2e-cancel
 export E2E_PLAIN=e2e-plain E2E_GZIP=e2e-gzip E2E_ALLOW=e2e-allow E2E_500=e2e-500
-export E2E_503=e2e-503
+export E2E_503=e2e-503 E2E_SIZE=e2e-size
 export E2E_RAFAR=e2e-rafar E2E_RAFAR_2=e2e-rafar-2
 for i in 1 2 3 4 5 6 7 8; do export "E2E_DIST_$i=e2e-dist-$i"; done
 
@@ -866,6 +870,82 @@ check "and it was answered by the upstream again, not by gateway state" "503" "$
 not_has "the example config does not recommend a window for 503" '^[ ]*503:' \
   "$(cat "$ROOT/config.example.yaml")"
 not_has "and the README example does not show one either" '^[ ]*503:' "$(cat "$ROOT/README.md")"
+
+printf '\n14. the size limits: the boundary, and the numbers the shipped files write\n'
+# A limit is a limit, not a refusal at the boundary: a body of exactly the configured size is
+# forwarded, and one byte more is a 413 before anything reaches an upstream. The model behind this
+# route is longer than the route name, so the length the upstream is told is not the length the
+# client counted, which is the case the Content-Length claim is about.
+cat > "$WORK/sizes.yaml" <<'YAML'
+server:
+  # Each startup fixture and each case gateway has its own port, so a failure points at the case
+  # that owns it rather than at a process the script started earlier.
+  listen: 127.0.0.1:8100
+  max_request_bytes: 4096
+routes:
+  sizelimit:
+    targets:
+      - name: at-the-cap
+        model: e2e-size-model
+        base_url: http://127.0.0.1:8091/v1
+        api_key_env: E2E_SIZE
+YAML
+start_gateway "$WORK/sizes.yaml" "$WORK/sizes.log"
+
+# The bodies are written by awk so the length is computed rather than typed: a fixture length that
+# someone typed by hand is a number that can be wrong without anything noticing. The two length
+# checks below are guards on the fixture, not on the implementation: they say this case is testing
+# the boundary and not a round number.
+awk 'BEGIN {
+  prefix = "{\"model\":\"sizelimit\",\"messages\":[{\"role\":\"user\",\"content\":\"prompt content ";
+  suffix = "\"}]}";
+  pad = ""; for (i = 0; i < 4096 - length(prefix) - length(suffix); i++) pad = pad "a";
+  printf "%s%s%s", prefix, pad, suffix;
+}' > "$WORK/atcap.json"
+check "the body sent is exactly the configured limit" "4096" "$(wc -c < "$WORK/atcap.json")"
+status=$(send http://127.0.0.1:8100/v1/chat/completions "$WORK/atcap.json" "$WORK/atcap.out")
+check "a body exactly at the limit is forwarded" "200" "$status"
+check "and the upstream was told the length of the body that arrived, not the one the client sent" \
+  "4101" "$(field e2e-size content_length)"
+field e2e-size body > "$WORK/atcap.got"
+# The pad is the one the client sent, counted from the client's own prefix: the model value is the
+# only difference, so the body that arrives is longer than the one that left by the length of that
+# value, which is the same reason Content-Length cannot be copied from the client.
+awk 'BEGIN {
+  sent = "{\"model\":\"sizelimit\",\"messages\":[{\"role\":\"user\",\"content\":\"prompt content ";
+  got = "{\"model\":\"e2e-size-model\",\"messages\":[{\"role\":\"user\",\"content\":\"prompt content ";
+  suffix = "\"}]}";
+  pad = ""; for (i = 0; i < 4096 - length(sent) - length(suffix); i++) pad = pad "a";
+  printf "%s%s%s\n", got, pad, suffix;
+}' > "$WORK/atcap.want"
+if cmp -s "$WORK/atcap.want" "$WORK/atcap.got"; then
+  CHECKS=$((CHECKS + 1))
+  pass "and the bytes that arrived are the bytes that were sent, with only the model value changed"
+else
+  CHECKS=$((CHECKS + 1)); fail "the body changed at the boundary"
+fi
+
+stats
+before=$(count e2e-size)
+awk 'BEGIN {
+  prefix = "{\"model\":\"sizelimit\",\"messages\":[{\"role\":\"user\",\"content\":\"prompt content ";
+  suffix = "\"}]}";
+  pad = ""; for (i = 0; i < 4097 - length(prefix) - length(suffix); i++) pad = pad "a";
+  printf "%s%s%s", prefix, pad, suffix;
+}' > "$WORK/overcap.json"
+check "and the second body is one byte past the limit" "4097" "$(wc -c < "$WORK/overcap.json")"
+status=$(send http://127.0.0.1:8100/v1/chat/completions "$WORK/overcap.json" "$WORK/overcap.out")
+check "one byte past the limit is a 413" "413" "$status"
+has "and names the reason the gateway has for it" 'request_body_too_large' "$(cat "$WORK/overcap.out")"
+stats
+check "and nothing reached the upstream, so the gateway did not forward a body it could not answer" \
+  "$before" "$(count e2e-size)"
+
+# The recommended numbers are a claim about the files a new user copies, so the files are read:
+# a recommendation CI can read is a recommendation CI can check.
+has "the example config writes the 32 MiB request limit it recommends" 'max_request_bytes: 33554432' \
+  "$(cat "$ROOT/config.example.yaml")"
+has "and the 64 MiB response limit" 'max_response_bytes: 67108864' "$(cat "$ROOT/config.example.yaml")"
 
 printf '\n%d checks: %s\n' "$CHECKS" "$([ "$FAIL" = 0 ] && echo 'all passed' || echo 'failures')"
 exit "$FAIL"

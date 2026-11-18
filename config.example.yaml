@@ -12,8 +12,14 @@ server:
   write_timeout: 0s
   idle_timeout: 120s
   shutdown_grace: 30s
-  max_request_bytes: 2097152    # 2 MiB
-  max_response_bytes: 33554432  # 32 MiB
+  # 0 or absent here means the library default: 8 MiB for a request body and 32 MiB for a
+  # response. The numbers written below are what this project recommends for a coding-agent
+  # workload, not the default a caller gets from nothing: a long context with a screenshot in it
+  # is a body in the tens of megabytes, and a 2 MiB limit turned that into a 413. The limits stay
+  # limits: a body over the number is a 413 before anything is forwarded, so the gateway never
+  # sends a request it could not have answered.
+  max_request_bytes: 33554432    # 32 MiB
+  max_response_bytes: 67108864   # 64 MiB
   max_header_bytes: 1048576
 
 timeouts:

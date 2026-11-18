@@ -493,6 +493,41 @@ matches the bytes it receives; it cannot say whether the gateway dropped the cli
 `Content-Length` or the transport sized the body, and that is not the same statement.
 And header-name canonicalisation is defensive: two Go clients write a name the same way,
 so no test with Go clients can prove it.
+## Size limits
+
+The limits are not removed, and a body over the limit is a 413 before anything is
+  forwarded, so the gateway never sends a request it could not have answered. The
+  library default is 8 MiB for a request body and 32 MiB for a response, which is what a
+  caller gets when nothing is written. A negative number is a startup error rather than
+  a value quietly replaced by the default; 0 and absent are the same number in a config
+  file, so 0 means the default.
+
+What this project recommends for a coding-agent workload, and what `config.example.yaml`
+  and `scripts/generate-config.py` write, is 32 MiB for a request and 64 MiB for a
+  response: a long context with a screenshot in it is a body in the tens of megabytes,
+  and a 2 MiB limit turned that into a 413 on a request that was never going to fail.
+
+| | library default | what the example and generator write |
+| --- | --- | --- |
+| `server.max_request_bytes` | 8 MiB | 32 MiB |
+| `server.max_response_bytes` | 32 MiB | 64 MiB |
+| `server.max_header_bytes` | 1 MiB | 1 MiB |
+
+Checked at the boundary against a real running gateway, by `./scripts/e2e.sh`: a body of
+  exactly 4096 bytes against a 4096 limit is forwarded, and one byte more is a 413 with
+  `code: request_body_too_large` and no upstream call. The body that arrives is the
+  bytes that were sent with only the bytes of the `model` value replaced, and the length
+  the upstream is told is the length of the body that arrived, not the length the client
+  counted.
+The response cap is checked the same way: a response of exactly the cap is delivered
+  whole, and one byte more stops copying without becoming an internal error, so the
+  client keeps what already arrived. A response that ends exactly at the cap is still
+  recorded as a cap hit, because the gateway cannot know whether more bytes would have
+  followed without waiting for them, and waiting is what an idle watchdog exists to
+  stop.
+Nothing here reads a body beyond the two fields it peeks, so an image payload is passed
+  because it is bytes, not because it is understood, and a multimodal body is no more
+  dangerous to the request path than a text one.
 
 ## Why retry is off by default
 

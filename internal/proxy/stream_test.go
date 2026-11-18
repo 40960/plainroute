@@ -525,6 +525,138 @@ routes:
 	}
 }
 
+// TestRequestBodyExactlyAtTheLimitIsForwarded: the limit is a limit, not a refusal at the
+// boundary. A body of exactly the configured size reaches the upstream, so the check that
+// rejects a larger body cannot also reject the one it was sized for.
+func TestRequestBodyExactlyAtTheLimitIsForwarded(t *testing.T) {
+	h := newHarness(t, `
+server:
+  max_request_bytes: 4096
+routes:
+  m:
+    targets:
+      - name: a
+        model: provider/model-one
+        base_url: https://fake.invalid/v1
+        api_key_env: KEY_A
+`, config.Env{"KEY_A": "key-a"})
+
+	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
+
+	prefix := `{"model":"m","messages":[{"role":"user","content":"prompt content `
+	suffix := `"}]}`
+	body := prefix + strings.Repeat("a", 4096-len(prefix)-len(suffix)) + suffix
+	if len(body) != 4096 {
+		t.Fatalf("fixture: body is %d bytes, want exactly the limit", len(body))
+	}
+
+	resp, _ := h.post(body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 at the boundary (%s)", resp.StatusCode, body[:40])
+	}
+	if h.fake.TotalAttempts() != 1 {
+		t.Errorf("attempts: got %d, want 1", h.fake.TotalAttempts())
+	}
+	want := strings.Replace(body, `"model":"m"`, `"model":"provider/model-one"`, 1)
+	if got := h.fake.LastBody("key-a"); got != want {
+		t.Errorf("forwarded body: got %d bytes, want the same bytes with only the model value changed", len(got))
+	}
+}
+
+// TestLargeMultimodalBodyOnlyTheModelValueChanges is the shape a coding agent sends: a large
+// body whose interesting bytes are a base64 blob the gateway does not understand. The point is
+// that a big body is still handled by splicing the model value into the original document, not
+// by parsing and re-serialising it, so the blob, the field order, the unknown field and the
+// spaces in the text part all survive as they were written.
+func TestLargeMultimodalBodyOnlyTheModelValueChanges(t *testing.T) {
+	h := newHarness(t, `
+server:
+  max_request_bytes: 33554432
+routes:
+  vision:
+    targets:
+      - name: a
+        model: provider/vision-model
+        base_url: https://fake.invalid/v1
+        api_key_env: KEY_A
+`, config.Env{"KEY_A": "key-a"})
+
+	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, Body: `{"ok":true}`})
+
+	blob := strings.Repeat("A9b+c/=", 200000)
+	prefix := `{"model":"vision","stream":true,"messages":[{"role":"user","content":[{"type":"text",` +
+		`"text":"what is in this screenshot, agent?"},{"type":"image_url","image_url":{"url":` +
+		`"data:image/png;base64,`
+	suffix := `"}}]}],"unknown_field":{"nested":[1,2,3]}}`
+	body := prefix + blob + suffix
+	if len(body) < 1<<20 {
+		t.Fatalf("fixture: body is %d bytes, which is not a body worth calling large", len(body))
+	}
+	want := strings.Replace(body, `"model":"vision"`, `"model":"provider/vision-model"`, 1)
+
+	resp, out := h.post(body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (%s)", resp.StatusCode, out)
+	}
+
+	received := h.fake.LastBody("key-a")
+	if received != want {
+		t.Errorf("forwarded body is not the bytes the client sent, with only the model value changed")
+	}
+	if got := h.fake.Last("key-a").ContentLength; got != int64(len(want)) {
+		t.Errorf("Content-Length the upstream was told: got %d, want %d for the body that arrived",
+			got, len(want))
+	}
+	if !strings.Contains(received, "what is in this screenshot, agent?") {
+		t.Errorf("the text part changed: the gateway is not supposed to read it")
+	}
+	if !strings.Contains(received, `"unknown_field":{"nested":[1,2,3]}`) {
+		t.Errorf("an unknown field was dropped or rewritten")
+	}
+}
+
+// TestResponseExactlyAtTheCapIsDeliveredWhole: a response of exactly the configured size is the
+// whole response, not a truncated one. The test that checks copying stops past the cap cannot show
+// this half on its own, because a body at the cap is the case where nothing is lost. It is still
+// recorded as a cap hit, and this test says so rather than pretending otherwise: the gateway
+// cannot know whether more bytes would have followed without waiting for them, and waiting is what
+// an idle watchdog exists to stop, so a response that happens to end at the cap is counted as
+// capped. What the client keeps is the whole response either way.
+func TestResponseExactlyAtTheCapIsDeliveredWhole(t *testing.T) {
+	h := newHarness(t, `
+server:
+  max_response_bytes: 200
+routes:
+  m:
+    targets:
+      - name: a
+        model: m
+        base_url: https://fake.invalid/v1
+        api_key_env: KEY_A
+`, config.Env{"KEY_A": "key-a"})
+
+	frame := "data: " + strings.Repeat("x", 42) + "\n\n"
+	if len(frame) != 50 {
+		t.Fatalf("fixture: frame is %d bytes, want 50", len(frame))
+	}
+	frames := []string{frame, frame, frame, frame}
+	h.fake.Set("key-a", fakeupstream.Behavior{Status: 200, SSE: frames})
+
+	resp, body := h.post(`{"model":"m","stream":true,"messages":[]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	if len(body) != 200 {
+		t.Errorf("body length: got %d, want the whole 200 bytes of the cap", len(body))
+	}
+	if !strings.Contains(h.log.String(), "response_limit") {
+		t.Errorf("the cap was not recorded for a response that reached it: %s", h.log.String())
+	}
+	if got := testutil.ToFloat64(h.metrics.StreamAborts.WithLabelValues("m", "a", "response_limit")); got != 1 {
+		t.Errorf("stream_aborts_total: got %v, want 1 for the cap that stopped copying", got)
+	}
+}
+
 // TestConcurrentRequests checks the promise the project makes in its README: more
 // than a hundred simultaneous requests, checked under the race detector.
 func TestConcurrentRequests(t *testing.T) {

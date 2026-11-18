@@ -322,13 +322,16 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.ShutdownGrace == 0 {
 		cfg.Server.ShutdownGrace = Duration(30 * time.Second)
 	}
-	if cfg.Server.MaxRequestBytes <= 0 {
+	// 0 and absent are the same number in a config file, so 0 means the default here. A negative
+	// value is not a default and is reported at startup, which is what makes the check in validate
+	// mean something rather than a message that can never print.
+	if cfg.Server.MaxRequestBytes == 0 {
 		cfg.Server.MaxRequestBytes = 8 << 20
 	}
-	if cfg.Server.MaxResponseBytes <= 0 {
+	if cfg.Server.MaxResponseBytes == 0 {
 		cfg.Server.MaxResponseBytes = 32 << 20
 	}
-	if cfg.Server.MaxHeaderBytes <= 0 {
+	if cfg.Server.MaxHeaderBytes == 0 {
 		cfg.Server.MaxHeaderBytes = 1 << 20
 	}
 
@@ -381,11 +384,14 @@ func validate(cfg *Config, env Env) error {
 	if cfg.Server.Listen == "" {
 		problems = append(problems, "server.listen is required")
 	}
-	if cfg.Server.MaxRequestBytes <= 0 {
-		problems = append(problems, "server.max_request_bytes must be positive")
+	if cfg.Server.MaxRequestBytes < 0 {
+		problems = append(problems, "server.max_request_bytes must be positive, or 0 for the default")
 	}
-	if cfg.Server.MaxResponseBytes <= 0 {
-		problems = append(problems, "server.max_response_bytes must be positive")
+	if cfg.Server.MaxResponseBytes < 0 {
+		problems = append(problems, "server.max_response_bytes must be positive, or 0 for the default")
+	}
+	if cfg.Server.MaxHeaderBytes < 0 {
+		problems = append(problems, "server.max_header_bytes must be positive, or 0 for the default")
 	}
 	if cfg.Server.ShutdownGrace <= 0 {
 		problems = append(problems, "server.shutdown_grace must be positive")

@@ -210,6 +210,47 @@ routes:
 	}
 }
 
+// TestParseReportsANegativeSizeLimit: the message in validate says a negative size is an error,
+// and until this test a negative value was replaced by the default before that check ran, so the
+// message was a claim that could never print. A negative number is not a default, and a limit
+// someone wrote is not a number to quietly replace.
+func TestParseReportsANegativeSizeLimit(t *testing.T) {
+	_, err := Parse([]byte(`
+server:
+  max_request_bytes: -1
+routes:
+  m:
+    targets: [{name: a, model: m, base_url: http://127.0.0.1:8081, api_key_env: K}]
+`), Env{"K": "x"})
+	if err == nil {
+		t.Fatal("expected an error for a negative size limit")
+	}
+	if !strings.Contains(err.Error(), "must be positive, or 0 for the default") {
+		t.Errorf("got: %v", err)
+	}
+}
+
+// TestZeroSizeLimitMeansTheDefault is the other half of the same rule: in a config file 0 and
+// absent are the same number, so 0 has to mean the default rather than a limit of zero bytes,
+// which would reject every request.
+func TestZeroSizeLimitMeansTheDefault(t *testing.T) {
+	cfg, err := Parse([]byte(`
+server:
+  max_request_bytes: 0
+  max_response_bytes: 0
+routes:
+  m:
+    targets: [{name: a, model: m, base_url: http://127.0.0.1:8081, api_key_env: K}]
+`), Env{"K": "x"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.Server.MaxRequestBytes != 8<<20 || cfg.Server.MaxResponseBytes != 32<<20 {
+		t.Errorf("size limits: got request %d and response %d, want the defaults",
+			cfg.Server.MaxRequestBytes, cfg.Server.MaxResponseBytes)
+	}
+}
+
 func TestParseRejectsBadDuration(t *testing.T) {
 	_, err := Parse([]byte(`
 timeouts:

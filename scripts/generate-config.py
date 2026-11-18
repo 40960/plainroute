@@ -38,8 +38,11 @@ server:
   write_timeout: 0s
   idle_timeout: 120s
   shutdown_grace: 30s
-  max_request_bytes: 2097152
-  max_response_bytes: 33554432
+  # The defaults a coding agent needs, and the values the CLI parameters set. The library default
+  # is smaller, so a file made by this script says what it wrote instead of leaving a reader to
+  # guess which default it is looking at.
+  max_request_bytes: 33554432
+  max_response_bytes: 67108864
   max_header_bytes: 1048576
 
 timeouts:

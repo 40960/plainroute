@@ -70,7 +70,20 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   ways, by the end-to-end script and by a test that writes no cooldown map at all, so
   what it reads is the code default.
 
+- The example config and the generator write 32 MiB for a request body and 64 MiB for a
+  response, where they wrote 2 MiB and 32 MiB. The library defaults are unchanged, and
+  the two sets are now written as two different things: what a caller gets when nothing
+  is written, and what this project recommends for a coding-agent workload whose body
+  can hold a screenshot. The limits stay limits. Checked at the boundary against a real
+  running gateway by `scripts/e2e.sh`: exactly the limit is forwarded, one byte more is
+  a 413 with `code: request_body_too_large` and no upstream call, and the bytes that
+  arrive are the bytes that were sent with only the bytes of the `model` value replaced.
+
 ### Fixes
+- A negative size limit is a startup error instead of being quietly replaced by the
+  default, which is what made the message in the config check a claim that could never
+  print. 0 and absent are the same number in a config file, so 0 means the default: a
+  limit someone wrote is not a number to substitute.
 
 - `plainroute_upstream_errors_total` help text named `status`, which that collector can never
   record, and left out two values it can. An upstream that answered with an error status is
