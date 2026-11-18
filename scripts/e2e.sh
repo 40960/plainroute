@@ -294,6 +294,8 @@ c=$(count e2e-caller)
 check "the caller key never became an upstream key" "0" "${c:-0}"
 check "the health endpoint is not gated" "ok" "$(curl -s http://127.0.0.1:8092/healthz)"
 has "the gate is counted on the metrics page" 'invalid_api_key' "$(curl -s http://127.0.0.1:8092/metrics)"
+has "the metrics page prints the route label, not model" 'plainroute_gateway_rejected_total{code="invalid_api_key",route="none"}' "$(curl -s http://127.0.0.1:8092/metrics)"
+not_has "no value taken from client input appears as a label" 'e2e-caller' "$(curl -s http://127.0.0.1:8092/metrics)"
 has "the startup line reports the gate and names the variable it read" 'api_key_env' "$(head -1 "$WORK/gate.log")"
 not_has "the startup line does not print the value" 'e2e-caller' "$(head -1 "$WORK/gate.log")"
 not_has "the caller key value does not appear in the log" 'e2e-caller' "$(cat "$WORK/gate.log")"

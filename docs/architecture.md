@@ -137,6 +137,12 @@ monitoring system that cannot authenticate is the ordinary case. A gate that can
 but is off by default does not change the invariants; a table of keys, per-caller quotas, or
 accounts would.
 
+**A metric label never holds client input.** The route label is a configured route name, or
+the constant `none` when the gateway answered before any route was resolved. The name a client
+sends in the `model` field is logged as `requested` when it is not a configured route, because
+a label value is never removed from the registry: a client that sends a different string on
+every request would grow it without bound. Logging a name is safe, counting one is not.
+
 **`Retry-After` is clamped.** A hostile or broken upstream value cannot make a target
 unavailable for an unreasonable time, and the value the gateway forwards is the window it
 actually applied, not whatever the upstream printed.
@@ -166,13 +172,15 @@ test that gets flaky.
 
 Two kinds of tests, and each answers a different question:
 
-- **Unit tests** in `internal/proxy`, `internal/routing`, `internal/config`, and
-  `internal/fakeupstream`: the request path against `httptest`, with the fake upstream keyed
+- **Unit tests** in `internal/proxy`, `internal/routing`, `internal/config`,
+  `internal/metrics`, and `internal/fakeupstream`: the request path against `httptest`, with the fake upstream keyed
   by API key value. These check the invariants, including flush-per-chunk timing, a stream
   that goes silent, an upstream that drops the connection mid-stream, a client that leaves,
   header filtering, redirects not being followed, goroutine counts after load, the 50-request
-  no-amplification check, and the api key gate: accepted, rejected, off when nothing is
-  configured, applied after a reload, and never forwarded upstream. The fake upstream has its
+  no-amplification check, the api key gate: accepted, rejected, off when nothing is
+  configured, applied after a reload, and never forwarded upstream, and the metric label names
+  as the page prints them: a test built on `WithLabelValues` matches values only, so it cannot
+  see whether a label is named `route` or `model`. The fake upstream has its
   own tests, because every other test depends on it doing what it promises.
 - **`scripts/e2e.sh`**: the fake upstream and the gateway as two real processes, checking the
   seven end-to-end cases. This is the check a unit test cannot replace, because it verifies the

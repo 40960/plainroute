@@ -328,6 +328,11 @@ upstream attempts, and the metrics must report the same numbers.
 | `plainroute_in_flight_requests` | Requests being handled right now |
 | `go_goroutines`, `go_memstats_heap_alloc_bytes`, `process_resident_memory_bytes` | The process itself |
 
+The `route` label is the route a request resolved to, or `none` when the gateway answered
+before any route was in play. It is never a value taken from client input: the name a client
+sends in the `model` field is logged as `requested` rather than counted, because a label value
+is never removed from the registry and a client can send any string.
+
 `requests_total` and `upstream_attempts_total` are kept separately on purpose. With retry
 disabled they should be the same number for proxied requests, and the difference is exactly
 the requests the gateway answered itself. `cmd/bench` reads these numbers from the gateway
@@ -339,7 +344,7 @@ upstream is contacted.
 
 Logs carry routing facts only: request id, route name, the model the selected target
 serves, target name, status, duration, time to first byte, bytes streamed, cooldown events,
-disconnects. There is no field in the logging package that could hold a key, a prompt or a
+disconnects, and the name a client sent when that name was not a configured route. There is no field in the logging package that could hold a key, a prompt or a
 response body, so a log line cannot leak one by accident.
 
 ## Docker

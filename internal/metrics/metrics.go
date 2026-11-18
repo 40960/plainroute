@@ -57,7 +57,7 @@ func New() *Metrics {
 		Registry: reg,
 		RequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_requests_total",
-			Help: "Client requests handled, labelled by model, target and status class.",
+			Help: "Client requests handled, labelled by route, target and status class.",
 		}, []string{"route", "target", "status_class"}),
 		UpstreamAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_upstream_attempts_total",
@@ -109,7 +109,7 @@ func New() *Metrics {
 		GatewayRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_gateway_rejected_total",
 			Help: "Requests answered by the gateway itself, without an upstream call.",
-		}, []string{"model", "code"}),
+		}, []string{"route", "code"}),
 		Reloads: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_config_reloads_total",
 			Help: "Configuration reloads by outcome.",

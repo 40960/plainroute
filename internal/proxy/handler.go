@@ -151,7 +151,7 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *conf
 	}
 
 	id := requestID(r)
-	h.metrics.GatewayRejected.WithLabelValues("all", "models_list").Inc()
+	h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "models_list").Inc()
 
 	// A route entry is the name a client can send. It is not a model: the models belong to the
 	// targets, so the listing reports the name and the distinct models it can be served by. When a
@@ -204,7 +204,7 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, cfg *conf
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", id)
 	w.WriteHeader(http.StatusOK)
-	h.writeToClient(w, body, "all", metrics.NoTarget, id)
+	h.writeToClient(w, body, metrics.NoRoute, metrics.NoTarget, id)
 }
 
 // handleChat is the whole gateway behaviour for one client request.
@@ -229,20 +229,20 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 		if errors.Is(err, errBodyTooLarge) {
 			status, code = http.StatusRequestEntityTooLarge, "request_body_too_large"
 		}
-		h.metrics.GatewayRejected.WithLabelValues("all", code).Inc()
+		h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, code).Inc()
 		h.reject(w, r, status, code, "invalid_request_error", err.Error(), metrics.NoRoute, id)
 		return
 	}
 
 	peek, err := peekBody(body)
 	if err != nil {
-		h.metrics.GatewayRejected.WithLabelValues("all", "invalid_json").Inc()
+		h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "invalid_json").Inc()
 		h.reject(w, r, http.StatusBadRequest, "invalid_json", "invalid_request_error",
 			err.Error(), metrics.NoRoute, id)
 		return
 	}
 	if peek.Model == "" {
-		h.metrics.GatewayRejected.WithLabelValues("all", "missing_model").Inc()
+		h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "missing_model").Inc()
 		h.reject(w, r, http.StatusBadRequest, "missing_model", "invalid_request_error",
 			`field "model" is required`, metrics.NoRoute, id)
 		return
@@ -250,7 +250,10 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, cfg *config
 
 	primary, ok := h.Registry().Lookup(peek.Model)
 	if !ok {
-		h.metrics.GatewayRejected.WithLabelValues(peek.Model, "model_not_found").Inc()
+		// The name a client sent cannot be a metric label: a client can send any string, and a
+		// label value is never removed. The name is logged instead, so it stays diagnosable.
+		h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "model_not_found").Inc()
+		h.log.Warn("route_not_found", "request_id", id, "requested", peek.Model)
 		h.reject(w, r, http.StatusNotFound, "model_not_found", "invalid_request_error",
 			"model "+peek.Model+" is not a configured route", metrics.NoRoute, id)
 		return

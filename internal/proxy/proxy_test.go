@@ -664,6 +664,19 @@ routes:
 		t.Error("an unknown model must not reach an upstream")
 	}
 
+	// The name a client sent is not a metric label. A label value is never removed, so a
+	// client that sends a different string on every request would grow the registry
+	// forever. The label is the constant, and the name is logged.
+	if got := testutil.ToFloat64(h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "model_not_found")); got != 1 {
+		t.Errorf("model_not_found at route=none: got %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(h.metrics.GatewayRejected.WithLabelValues("nope", "model_not_found")); got != 0 {
+		t.Errorf("the name a client sent became a label value: got %v", got)
+	}
+	if !strings.Contains(h.log.String(), `"requested":"nope"`) {
+		t.Errorf("the attempted name is not in the log: %s", h.log.String())
+	}
+
 	resp, body = h.post(`{ not json`)
 	if resp.StatusCode != 400 {
 		t.Fatalf("bad json: got %d", resp.StatusCode)

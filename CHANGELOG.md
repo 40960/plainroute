@@ -32,6 +32,12 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   is left out because it would only repeat the id. Only `id` is a name a client can send:
   `models` says what is inside a route, and a route name is the level a client codes against,
   so a model name in the listing is not a sendable name.
+- `plainroute_gateway_rejected_total` no longer counts a name a client sent as the route
+  label. `model_not_found` is counted with `none`, which is the value the api key gate already
+  used, and the four rejections that were counted with `all` are counted with `none`. The name
+  the client sent is logged as `requested` instead. A label value is never removed from the
+  registry, so a client that sends a different name on every request would grow it without
+  bound.
 - Lookup accepts route names only, so a request that names a model is a 404 with
   `code: model_not_found`. Looking up by upstream model name was possible only while one name
   mapped to exactly one model. A model can now sit behind several routes, and any rule for
