@@ -544,6 +544,44 @@ are on the wire, there is no taking them back.
 There is a regression test for this: 50 client requests must never produce more than 50
 upstream attempts, and the metrics must report the same numbers.
 
+## With a client that owns retry, such as OpenCode
+
+Point the client at the gateway's OpenAI-compatible base URL and put a route name in the
+`model` field: a route name is what a client sends, and the model behind it belongs to
+the target that was picked. The client is the part that decides whether a request is
+worth repeating, so what the gateway keeps for it is what a retry rule needs:
+
+- The status, unchanged. A client that branches on `429`, `401`, `403` or `503` gets the
+  status it branches on. Nothing here turns a provider error into a gateway error,
+  because a retry rule depends on which one it was.
+- The body, unchanged, byte for byte, including a shape this project has never seen. A
+  client that reads `error.message` still reads it, a client that reads a problem
+  document still reads it, and an answer that is not JSON at all is still what the
+  upstream wrote.
+- `Retry-After`, with the one exception the routing section states: the number is the
+  window the gateway actually applied, so a claim of 7200 seconds arrives as 900 under
+  the default clamp, and as written when the clamp is off.
+- One upstream attempt per client request, unless a fallback is configured. That is the
+  claim a client relies on when it counts its own retries.
+
+The two counters are what makes a client's retries readable:
+
+```bash
+curl -s http://127.0.0.1:8080/metrics | grep -E 'requests_total|upstream_attempts_total'
+```
+
+`requests_total` counts client requests and `upstream_attempts_total` counts upstream
+calls. While no fallback is configured the two are equal. When a client retries, the
+second grows with those retries, which is why they are kept apart: the growth is the
+client's, and it stays visible. Two numbers that drift apart while no client retried
+would mean something inside the gateway repeated a request, which is not what this
+project does.
+
+The numbers `config.example.yaml` and the generator write — 32 MiB for a request, 64 MiB
+for a response, a 30 second clamp — are for the shape a coding agent sends: a long
+context with a screenshot in it is a body in the tens of megabytes. Nothing here reads
+the image, so an image payload travels as bytes.
+
 ## Streaming transparency
 
 - The response body is copied with no accumulation; the gateway never holds a model
@@ -656,8 +694,10 @@ Inside a container, `127.0.0.1` is the container itself. If the upstream runs on
 write `host.docker.internal` in the config file (the compose file maps that name to the
 gateway), not `127.0.0.1`.
 
-The name a published image would carry is `ghcr.io/40960/plainroute`. Nothing is published
-from this repository automatically; the CI job builds the image without pushing it.
+The name a published image carries is `ghcr.io/40960/plainroute`. The CI job builds the
+image without pushing it; only the release workflow publishes, on a `v*.*.*` tag, signs
+keyless against the identity of the run that built it, and writes a GitHub Release that
+names the version, the commit, the immutable digest and the two verify commands.
 
 ## Security
 
@@ -775,6 +815,7 @@ make fmt vet test race build headers
 ./scripts/e2e.sh          # end-to-end checks against two real processes; CI runs it too
 make bench                # load test, checked against the gateway's own counters
 python3 scripts/generate-config.py --keys 4 --out config.yaml   # model list from the live endpoint, snapshot fallback
+BASE_URL=https://your-host/v1 API_KEY=... MODEL=... ./scripts/smoke-openai-compatible.sh   # a live endpoint as a client sees it
 ```
 
 CI runs the unit tests, the end-to-end script and the licence-header check on every
@@ -783,6 +824,7 @@ it, not as a fact: the image size and the container settings need a docker daemo
 the model list falls back to a snapshot only when the live endpoint gives nothing. Every
 end-to-end assertion here was shown to fail once by breaking the code it reads, so a
 green run means something.
+
 ### Generating a config
 
 `scripts/generate-config.py` writes a config for one OpenAI-compatible upstream: the
@@ -810,5 +852,57 @@ parameters change what the script writes, that the script writes a key name and 
 key, and that the output is a config a real gateway loads and routes a request through,
 not only text that looks like a config.
 
+### The commands that take the measurements
+
+Every claim in this README is either checked by a gate, or written as a measurement with
+the command that takes it. The gates are these, from the repository root:
+
+```bash
+make fmt vet test race build headers
+./scripts/e2e.sh
+```
+
+`e2e.sh` starts the fake upstream and the gateway as two real processes, and the checks
+it asserts were shown to fail once by breaking the code they read, so a green run means
+something. A check that only compares an HTTP status is not a check when that status
+comes from the gateway's own reject branch: the checks that matter read bytes.
+
+What no gate can check, and how to take it on a machine that can:
+
+```bash
+# the image, and the settings the compose file documents
+docker build -t plainroute .
+docker images --format '{{.Size}}' plainroute
+docker compose up -d
+curl -s http://127.0.0.1:8080/healthz
+docker inspect --format 'user={{.Config.User}} readonly={{.HostConfig.ReadonlyRootfs}}
+  caps={{json .HostConfig.CapDrop}}' plainroute
+
+# a live endpoint as a client sees it. This contacts your provider: it is an operator
+# tool, and CI never runs it against a provider.
+BASE_URL=https://your-host/v1 API_KEY=... MODEL=... ./scripts/smoke-openai-compatible.sh
+
+# the signature of a published image, from a machine with cosign
+cosign verify \
+  --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@refs/tags/<tag>' \
+  --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
+  'ghcr.io/40960/plainroute@<digest>'
+cosign verify-attestation --type sbom \
+  --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@refs/tags/<tag>' \
+  --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
+  'ghcr.io/40960/plainroute@<digest>'
+```
+
+The smoke script prints status, time to first byte and total time, and structural facts
+only, so the key and the prompt never appear in its output. CI checks that its checks
+can pass and that each can fail against an answer that should not satisfy them, against
+the project's own fake upstream. A green CI run for that script says the script works,
+not that a provider works.
+
+Claims that were not measured in the run that produced this README are stated as
+unmeasured: the image size, the container settings, the health check answering, the
+cosign signature and the release body need a docker daemon, a cosign install and a tag,
+and a workflow file cannot check itself, so the release workflow was read by hand
+instead.
 See [CONTRIBUTING.md](CONTRIBUTING.md), [docs/architecture.md](docs/architecture.md), and
 [CHANGELOG.md](CHANGELOG.md).

@@ -62,6 +62,44 @@ cannot aim a request at a key it was not given.
   no prompt content. It is not behind the gate, because monitoring is the ordinary case; if
   the page should not be reachable from outside, restrict it or set `metrics.enabled: false`.
 
+## How to check these claims
+
+Each claim above is either checked by a gate that runs on every push, or written as a
+measurement you take yourself. A claim that no gate can check is not written as a fact.
+
+Checked by the gates (`make fmt vet test race build headers`, and `./scripts/e2e.sh`):
+
+- The gate compares the caller key in constant time, on the API endpoints only, before the
+  body is read; a named variable that is not in the environment stops the process, and every
+  missing name is reported at once.
+- A request that the gate rejects never reaches an upstream, which is checked by counting
+  what the fake upstream received rather than by reading a log line.
+- Size limits are enforced before forwarding: exactly the limit is forwarded, one byte more is
+  a 413 with `code: request_body_too_large` and no upstream call.
+- `Retry-After` is clamped, checked with one target at three different clamp settings.
+- No key, prompt or response body appears in a log line or a metric label. The logging
+  package has no field that could carry one, so a line cannot leak one by accident.
+- A provider error is forwarded with the upstream's status and the upstream's bytes, which is
+  what a client that branches on the status depends on.
+
+Each of those was shown to fail once by breaking the code it reads. A check that cannot
+fail is not a check, so a green run is not treated as proof until the same check is seen
+to report a failure against a deliberate break.
+
+Measured on a machine, not by CI:
+
+- The image and the container settings: the commands in the README's Development section, run
+  against a container you started.
+- The log and the metrics page: send a request with a key value you can recognise, then search
+  the log lines and `GET /metrics` for it. The search returns nothing, and that is the check.
+- A published image: `cosign verify` and `cosign verify-attestation --type sbom`, with the
+  identity regexp naming this repository's release workflow. The signature is bound to the run
+  that built the image, so a build from anywhere else does not verify against it.
+- The smoke script (`scripts/smoke-openai-compatible.sh`): CI runs it against the project's own
+  fake upstream, never against a provider, and checks both that its checks pass and that each
+  can fail against an answer that should not satisfy it. Its output prints status, timings and
+  structural facts, and CI asserts that the key value and the prompt are not in that output.
+
 ## In and out of scope
 
 In scope: request handling, routing and cooldown state, header handling, redirect handling,

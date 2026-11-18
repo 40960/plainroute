@@ -150,6 +150,19 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   a delayed answer, and the request count is one per check, so no check can pass on an
   answer another check received.
 
+### Docs
+
+- A section for a client that owns retry, such as OpenCode: what the gateway keeps for a
+  client that branches on a status (the status, the body byte for byte, `Retry-After` as
+  the window it applied, one attempt per request), and the two counters that make a
+  client's retries readable — `requests_total` against `upstream_attempts_total`, which
+  are equal while no fallback is configured.
+- The verification commands, kept apart from the claims: what a gate checks on every
+  push, and what only a machine with a docker daemon, cosign and a tag can measure.
+  SECURITY.md and the README now say which claim is which kind. The claim about
+  publishing was corrected: an image is published only by the release workflow, on a
+  tag.
+
 ## 0.1.0
 
 Released for the first publish. Everything below was checked by tests, the race detector, or
