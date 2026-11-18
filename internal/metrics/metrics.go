@@ -96,7 +96,7 @@ func New() *Metrics {
 		}, []string{"route", "target"}),
 		UpstreamErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_upstream_errors_total",
-			Help: "Upstream failures by kind: status, transport, timeout, stream_idle.",
+			Help: "Upstream failures by kind: build_request, transport, timeout, stream_idle, client_gone.",
 		}, []string{"route", "target", "kind"}),
 		ClientDisconnects: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_client_disconnects_total",

@@ -50,6 +50,15 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   that gets balanced; two route names are never balanced against each other, and one reaches
   the other only through a configured fallback.
 
+### Fixes
+
+- `plainroute_upstream_errors_total` help text named `status`, which that collector can never
+  record, and left out two values it can. An upstream that answered with an error status is
+  counted by `upstream_attempts_total` with its status class, and a response cap is a reason on
+  `plainroute_stream_aborts_total`. The help text now names the five kinds the collector can
+  hold: `build_request`, `transport`, `timeout`, `stream_idle`, `client_gone`. The metrics test
+  compares the collected text, so the help text and the label names are checked, not assumed.
+
 ## 0.1.0
 
 Released for the first publish. Everything below was checked by tests, the race detector, or

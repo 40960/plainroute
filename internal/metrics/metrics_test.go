@@ -31,4 +31,16 @@ plainroute_gateway_rejected_total{code="model_not_found",route="none"} 1
 `), "plainroute_gateway_rejected_total"); err != nil {
 		t.Errorf("gateway_rejected: %v", err)
 	}
+
+	// The help text lists the kinds this collector can actually be incremented with. Two
+	// values people expect are not among them: an upstream that answered with an error status
+	// is counted by upstream_attempts_total with its status class, and a response cap is a
+	// stream abort reason, not an upstream failure.
+	m.UpstreamErrors.WithLabelValues(NoRoute, NoTarget, "transport").Inc()
+	if err := testutil.CollectAndCompare(m.UpstreamErrors, strings.NewReader(`# HELP plainroute_upstream_errors_total Upstream failures by kind: build_request, transport, timeout, stream_idle, client_gone.
+# TYPE plainroute_upstream_errors_total counter
+plainroute_upstream_errors_total{kind="transport",route="none",target="none"} 1
+`), "plainroute_upstream_errors_total"); err != nil {
+		t.Errorf("upstream_errors: %v", err)
+	}
 }
