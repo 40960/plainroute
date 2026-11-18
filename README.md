@@ -393,7 +393,19 @@ auth:
   written. An unparseable or non-positive `Retry-After` falls back to the configured duration.
 - A status code with no entry, or an entry of 0, does not cool a target down: the target stays
   selectable, and the gateway sends no `Retry-After` because it applied no window. Nothing
-  configured means the default map, which is `429: 10s`.
+  configured means the default map, which is `429: 10s`. That value is a prior for the silent
+  case, not a measurement of any provider window, so it cannot be right for every provider. The
+  choice is between holding a target out longer than the provider asked, and asking the same key
+  again too soon: 10s sits between a per-second limiter and a per-minute limiter, which is the
+  narrowest band a default can cover, and it is long enough that the same key is not asked again
+  on every request. For a key that was told to slow down, the window is also the interval at
+  which that key is asked again.
+- A bigger cooldown value does not mean fewer upstream requests. One client request is one
+  upstream attempt whenever a target is selectable, so a bigger window only moves answers from
+  the provider to the gateway. Fewer requests come from the client backing off, or from setting
+  the window you actually know instead of the prior. Measured with the default, on a
+  single-target route at one request per second: 12 requests gave 2 upstream attempts, the other
+  10 answered from gateway state, and the second attempt landed on the 10 second boundary.
 - A connection, response-header or stream idle failure has no `Retry-After` to read, so it uses
   `routing.cooldown.timeout`. 0 disables it, and 0 is the default, which is why a connection
   failure is a failed request rather than a target taken out of the pool.

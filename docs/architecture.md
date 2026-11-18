@@ -147,6 +147,18 @@ every request would grow it without bound. Logging a name is safe, counting one 
 unavailable for an unreasonable time, and the value the gateway forwards is the window it
 actually applied, not whatever the upstream printed.
 
+**The default cooldown is a prior, not a measurement.** `429: 10s` applies only when the
+upstream sent nothing usable, because when it sent a `Retry-After` that value wins. It cannot be
+right for every provider, so the choice is between holding a target out longer than the provider
+asked, and asking the same key again too soon: 10s sits between a per-second limiter and a
+per-minute limiter, which is the narrowest band a default can cover, and it is long enough that
+the same key is not asked again on every request. For a key that was told to slow down, the
+window is also the interval at which that key is asked again. A larger default does not reduce the number of upstream requests, because one client
+request is one upstream attempt whenever a target is selectable: it moves answers from the
+provider to the gateway, which is what this project calls a bug when the provider would have
+answered. An operator who knows their provider's window should set it explicitly rather than
+rely on the prior.
+
 **Cooldown state survives a reload.** Target state is keyed by route and target name
 in a `StateStore`, so rebuilding the registry after a `SIGHUP` does not clear a cooldown for a
 target that is still configured. A failed reload keeps the running config, because a bad

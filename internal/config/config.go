@@ -142,8 +142,11 @@ type CooldownConfig struct {
 	Timeout Duration `yaml:"timeout"`
 }
 
-// DefaultCooldown is the behaviour the project is built around: a 429 takes the
-// target that produced it out of the pool for ten seconds.
+// DefaultCooldown is the behaviour the project is built around: a 429 takes the target that
+// produced it out of the pool for ten seconds, when the upstream sent no usable Retry-After.
+// The ten seconds are a prior for the silent case, not a measurement of any provider window,
+// and for a key that was told to slow down they are also the interval at which that key is
+// asked again.
 func DefaultCooldown() map[int]Duration {
 	return map[int]Duration{429: Duration(10 * time.Second)}
 }
