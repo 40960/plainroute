@@ -120,6 +120,22 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   only compares a status cannot fail when that status comes from the gateway's own
   reject branch, so the checks that matter read bytes.
 
+### Tools
+
+- `scripts/smoke-openai-compatible.sh` checks a live OpenAI-compatible endpoint the way
+  a client sees it: the model list, a non-stream answer, a streamed answer, a tool call,
+  a top-level field this project does not define, an error answer, and one optional
+  image. Each line reports the status, the time to the first byte and the total time,
+  and prints structural facts only, so neither the key nor the prompt appears in the
+  output.
+- CI cannot use it to check somebody's provider, so CI runs it against the project's own
+  fake upstream, where what is checked is that the checks can pass and that each can
+  fail against an answer that should not satisfy it: a stream without the frame that
+  ends it, a prose answer to a tool-call request, an error written as an HTML page, an
+  endpoint that accepts an empty messages array. The timings are shown to be measured by
+  a delayed answer, and the request count is one per check, so no check can pass on an
+  answer another check received.
+
 ## 0.1.0
 
 Released for the first publish. Everything below was checked by tests, the race detector, or

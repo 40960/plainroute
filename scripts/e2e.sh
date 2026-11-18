@@ -179,6 +179,66 @@ cat > "$WORK/behaviors.json" <<'JSON'
   "gen-key-1": {
     "status": 200,
     "body": "{\"object\":\"chat.completion\",\"choices\":[]}"
+  },
+  "smoke-ok": {
+    "sequence": [
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 200, "delay": "150ms", "sse": ["data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n", "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", "data: [DONE]\n\n"]},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"name\":\"smoke_tool\",\"arguments\":\"{}\"}}]}}]}"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 429, "headers": {"Retry-After": "6"}, "body": "{\"status\":429,\"title\":\"Too Many Requests\"}"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"}
+    ]
+  },
+  "smoke-skip": {
+    "sequence": [
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 200, "delay": "150ms", "sse": ["data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n", "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", "data: [DONE]\n\n"]},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"name\":\"smoke_tool\",\"arguments\":\"{}\"}}]}}]}"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 429, "headers": {"Retry-After": "6"}, "body": "{\"status\":429,\"title\":\"Too Many Requests\"}"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"}
+    ]
+  },
+  "smoke-nodone": {
+    "sequence": [
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 200, "sse": ["data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"more\"}}]}\n\n"]},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"name\":\"smoke_tool\",\"arguments\":\"{}\"}}]}}]}"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 429, "headers": {}, "body": "{\"status\":429,\"title\":\"Too Many Requests\"}"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"}
+    ]
+  },
+  "smoke-notool": {
+    "sequence": [
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 200, "delay": "150ms", "sse": ["data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n", "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", "data: [DONE]\n\n"]},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"I will answer in prose instead\"}}]}"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 429, "headers": {}, "body": "{\"status\":429,\"title\":\"Too Many Requests\"}"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"}
+    ]
+  },
+  "smoke-html": {
+    "sequence": [
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 200, "delay": "150ms", "sse": ["data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n", "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", "data: [DONE]\n\n"]},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"name\":\"smoke_tool\",\"arguments\":\"{}\"}}]}}]}"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 429, "headers": {"Content-Type": "text/html"}, "body": "<html><body>429 written by something in front of the endpoint</body></html>"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"}
+    ]
+  },
+  "smoke-accepts-empty": {
+    "sequence": [
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 200, "delay": "150ms", "sse": ["data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n", "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", "data: [DONE]\n\n"]},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"name\":\"smoke_tool\",\"arguments\":\"{}\"}}]}}]}"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"},
+      {"status": 200, "headers": {}, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"an empty messages array was accepted\"}}]}"},
+      {"status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[{\"message\":{\"content\":\"answer\"}}]}"}
+    ]
   }
 }
 JSON
@@ -988,6 +1048,79 @@ status=$(post_to 8101 glm-4.5 "$WORK/genreq.out")
 check "and a request through a generated route reaches the upstream" "200" "$status"
 has "and the answer is the one this key is configured for, so the route the script wrote is the route the gateway reads" \
   'chat.completion' "$(cat "$WORK/genreq.out")"
+
+printf "\n16. the live smoke script, run against the project's own fake upstream\n"
+# CI cannot check anybody's provider, so this runs the script against the fake upstream: what is
+# checked is that its checks can pass, and that each can fail against an answer that should not
+# satisfy it. A behaviour that answered every request the same way could not serve both the stream
+# check and the non-stream check, so these are sequences in the order the script sends requests:
+# non-stream, stream, tool call, unknown field, error answer, then the optional image. The model list
+# is not in the sequence, because the fake upstream answers that path before it looks at the key.
+# A delay on the stream entry is what makes the timing checks answerable: a script that printed a
+# number instead of measuring one cannot tell a measured time from a made-up time.
+printf 'not a real PNG: the script sends the bytes it is given and never reads them\n' > "$WORK/fake.png"
+
+smoke() { # key, output file, fixture
+  BASE_URL=http://127.0.0.1:8091/v1 API_KEY="$1" MODEL=smoke-model IMAGE_FIXTURE="${3:-}" \
+    ./scripts/smoke-openai-compatible.sh > "$2" 2>&1
+  return $?
+}
+
+smoke smoke-ok "$WORK/smoke-pass.txt" "$WORK/fake.png"; code=$?
+check "the script passes against the fake upstream" "0" "$code"
+check "and reports seven checks" "7 checks: all passed" "$(tail -1 "$WORK/smoke-pass.txt")"
+for name in 'model list' 'non-stream completion' 'stream completion' 'tool call' 'unknown top-level field' 'error answer is its own' 'image fixture'; do
+  has "the $name check reported ok" "  ok    $name" "$(cat "$WORK/smoke-pass.txt")"
+done
+# The words "stream completion" also occur inside "non-stream completion", so the line is picked by
+# its fields rather than by a substring: a check that read the wrong line would measure the wrong
+# request, and a delay on the stream entry is what makes a measured time tell them apart.
+ttft=$(awk '$2 == "stream" && $3 == "completion" {print; exit}' "$WORK/smoke-pass.txt" | sed -n 's/.*ttft=\([0-9]\{1,\}\)ms.*/\1/p')
+total=$(awk '$2 == "stream" && $3 == "completion" {print; exit}' "$WORK/smoke-pass.txt" | sed -n 's/.*total=\([0-9]\{1,\}\)ms.*/\1/p')
+check "the timings are measured and not printed as constants" "1" \
+  "$(awk -v t="$ttft" 'BEGIN { print (t >= 100) ? 1 : 0 }')"
+check "and the first byte cannot arrive after the response ended" "1" \
+  "$(awk -v a="$ttft" -v b="$total" 'BEGIN { print (a <= b) ? 1 : 0 }')"
+
+has "the key travels as a bearer token, which is what says the request went with the key" \
+  'Authorization=Bearer smoke-ok' "$(last smoke-ok)"
+has "and the image request carried the payload as bytes, read back from what the upstream received" \
+  'data:image/png;base64,' "$(last smoke-ok)"
+check "so the body sent was the prompt plus the payload and not the prompt alone" "1" \
+  "$(awk -v n="$(field smoke-ok content_length)" 'BEGIN { print (n > 100) ? 1 : 0 }')"
+not_has "the output does not contain the key" 'smoke-ok' "$(cat "$WORK/smoke-pass.txt")"
+not_has "and it does not contain the prompt either" 'smoke prompt content qz' "$(cat "$WORK/smoke-pass.txt")"
+stats
+check "one upstream request per check, so no check can pass on an answer another check received" \
+  "6" "$(count smoke-ok)"
+
+smoke smoke-skip "$WORK/smoke-skip.txt"
+has "the optional check says it was skipped rather than passing, when no fixture is given" \
+  '  skip  image fixture' "$(cat "$WORK/smoke-skip.txt")"
+stats
+check "and that run made five requests, not six" "5" "$(count smoke-skip)"
+
+# Each check that a wrong answer could satisfy is shown to fail against that wrong answer, and the
+# summary must still say exactly one failed: the other six passed for the right reason.
+smoke smoke-nodone "$WORK/smoke-nodone.txt" "$WORK/fake.png"; code=$?
+check "a stream without the frame that ends it fails the stream check" "1" "$code"
+has "and names which check failed" '  FAIL  stream completion' "$(cat "$WORK/smoke-nodone.txt")"
+check "and the other six checks still passed" "7 checks: 1 failed" "$(tail -1 "$WORK/smoke-nodone.txt")"
+
+smoke smoke-notool "$WORK/smoke-notool.txt" "$WORK/fake.png"; code=$?
+check "a prose answer to a tool-call request fails the tool check" "1" "$code"
+has "and names which check failed" '  FAIL  tool call' "$(cat "$WORK/smoke-notool.txt")"
+check "and the other six checks still passed" "7 checks: 1 failed" "$(tail -1 "$WORK/smoke-notool.txt")"
+
+smoke smoke-html "$WORK/smoke-html.txt" "$WORK/fake.png"; code=$?
+check "a 429 written as an HTML page is not the endpoint's own document" "1" "$code"
+has "and says why" 'html=yes' "$(cat "$WORK/smoke-html.txt")"
+check "and the other six checks still passed" "7 checks: 1 failed" "$(tail -1 "$WORK/smoke-html.txt")"
+
+smoke smoke-accepts-empty "$WORK/smoke-empty.txt" "$WORK/fake.png"; code=$?
+check "an endpoint that accepts an empty messages array is reported, not praised" "1" "$code"
+has "and names which check failed" '  FAIL  error answer is its own' "$(cat "$WORK/smoke-empty.txt")"
+check "and the other six checks still passed" "7 checks: 1 failed" "$(tail -1 "$WORK/smoke-empty.txt")"
 
 printf '\n%d checks: %s\n' "$CHECKS" "$([ "$FAIL" = 0 ] && echo 'all passed' || echo 'failures')"
 exit "$FAIL"
