@@ -70,6 +70,103 @@ successfully, that is a bug in this project.
 
 ## Quick start
 
+The picture, then the smallest config, then one request. Nothing here needs a real key.
+
+```mermaid
+flowchart LR
+  client["client sends a route name"] --> row["the name picks a row of targets"]
+  row --> pick["pick exactly one target"]
+  pick --> send["one request out, body unchanged except the model value"]
+  send --> provider["provider answers"]
+  provider --> back["bytes copied back per chunk, unchanged"]
+  back --> client
+  pick -.->|"nothing selectable"| own["429 answered from gateway state, no upstream call"]
+  own -.-> client
+```
+
+The smallest config that shows the point: one route name, two targets behind it. Save it as
+`demo.yaml`.
+
+```yaml
+routes:
+  demo:
+    targets:
+      - name: account-1
+        model: provider/model-one
+        base_url: http://127.0.0.1:8091/stream
+        api_key_env: DEMO_KEY_1
+      - name: account-2
+        model: provider/model-two
+        base_url: http://127.0.0.1:8091/stream
+        api_key_env: DEMO_KEY_2
+```
+
+Run it against the fake upstream, which answers with fixed frames on fixed paths. The value of
+`DEMO_KEY_1` is what selects the behaviour, because a key is what identifies a target:
+
+```bash
+# from the repository root
+go run ./cmd/fakeupstream &                          # 127.0.0.1:8091, stats at /stats
+DEMO_KEY_1=a1 DEMO_KEY_2=a2 go run ./cmd/plainroute -config demo.yaml
+```
+
+Send one request:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"demo","stream":true,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+The client sent the route name `demo`, and what comes back is the three frames the upstream
+produced, unchanged:
+
+```text
+data: {"object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}
+
+data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}
+
+data: [DONE]
+```
+
+The log line for that request, from the same run, wrapped here for reading. `time` and
+`request_id` are the ones that run produced:
+
+```json
+{"time":"2026-11-18T06:39:20.54505134Z","level":"INFO","msg":"request_completed",
+ "request_id":"dff4c54d46336f0c","route":"demo","model":"provider/model-one",
+ "target":"account-1","status":200,"stream":true,"ttft_ms":0,"duration_ms":0,
+ "bytes":180,"active":1}
+```
+
+`route` is the name the client sent, `model` is the model of the target that answered,
+`target` is which one was picked, and `bytes` is what was copied. The fake upstream counted
+exactly one attempt for that key, which is the whole promise: one client request, one
+upstream request.
+
+```bash
+curl -s http://127.0.0.1:8091/stats   # {"attempts":{"a1":1},"cancelled":null,"total":1}
+```
+
+Five things happened, and only two of them are decisions:
+
+1. `demo` picked the row, which is the set of targets that can answer that name.
+2. `least_active` picked one target. A tie keeps the order the config lists, so this run
+   picked `account-1`. Sequential requests never overlap, so it keeps picking it.
+3. The body went out once, with only the bytes of the `model` value replaced by the picked
+   target's model. Nothing else in the document changed.
+4. The answer was copied back per chunk and flushed per chunk. Nothing was parsed or
+   re-formed, so the frames above are the frames the upstream wrote.
+5. What was recorded is a routing fact: route, target, status, timings, byte count. There
+   is no field in the logging package that could hold a key, a prompt or a response body.
+
+A target that answered badly is taken out of the pool for the *next* request, not for this
+one: this request ends with the answer it already got. When every target in the row is out
+of the pool, the gateway answers from its own state instead of knocking, 429 with
+`code: all_targets_cooling_down`.
+
+## Install
+
 ```bash
 go build -o bin/plainroute ./cmd/plainroute
 cp config.example.yaml config.yaml
@@ -79,20 +176,33 @@ export LOCAL_KEY=...        # the example config has a second route named local
 ./bin/plainroute -config config.yaml
 ```
 
-Every name the config uses has to be set: `api_key_env` names an environment variable.
-A config that references an unset one is a startup failure, not a request that fails
-later. The example config uses three names, so the quick start exports three.
+Every name the config uses has to be set, because `api_key_env` names an environment
+variable. A config that references an unset one is a startup failure, not a request that
+fails later, and the error names every missing variable at once.
+
+Keys are read from the environment. Nothing that looks like a secret belongs in a config
+file, and the gateway never writes a key into a log line. A key is resolved when the config
+is read and held in memory after that. `api_key_env` is the name of a variable, never the
+value, so a key written into a YAML field is not a shape this project accepts: a key in a
+file is a key in git, in an image layer, and in a PR diff. A process sees the environment it
+was started with, so a `SIGHUP` reload re-reads the same values, and changing a key means
+starting a new process. In a container the environment is fixed when the container is
+created, so a changed `.env` file needs a new container.
+
+The config can reference the environment anywhere with `${NAME}` or `${NAME:-default}`, and
+an unset reference without a default stops the process. For a key that does not help:
+`api_key_env` is looked up as a name, so `${MISSING_KEY:-sk-example}` is read as a variable
+called `sk-example`, which is not set, and the config is rejected. A key value can only come
+from the environment.
+
+Check that it is running:
 
 ```bash
 curl -s http://127.0.0.1:8080/healthz            # ok
 curl -s http://127.0.0.1:8080/v1/models
-curl -s http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"demo","stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-The name in the `model` field here is a route name (`demo`), not a model name. What the
-example config prints, from a real run:
+What the example config prints, from a real run:
 
 ```json
 {
@@ -106,112 +216,8 @@ example config prints, from a real run:
 }
 ```
 
-`created` is the process start time, the same number on every entry. `models` is what sits inside
-the route; the sendable name is `id`.
-
-If you do not want to point it at a real provider, `./scripts/e2e.sh` runs the whole set of
-behaviours against the fake upstream as two real processes, prints one line per check, and
-ends with a summary.
-
-Keys are read from the environment. Nothing that looks like a secret belongs in a config
-file, and the gateway never writes a key into a log line.
-
-A key is resolved when the config is read and held in memory after that. `api_key_env` is the
-name of a variable, never the value, so a key written into a YAML field is not a shape this
-project accepts: a key in a file is a key in git, in an image layer, and in a PR diff. A
-process sees the environment it was started with, so a `SIGHUP` reload re-reads the same
-values, and changing a key means starting a new process. In a container the environment is
-fixed when the container is created, so a changed `.env` file needs a new container.
-
-The config can reference the environment anywhere with `${NAME}` or `${NAME:-default}`, and an
-unset reference without a default stops the process. For a key that does not help: `api_key_env`
-is looked up as a name, so `${MISSING_KEY:-sk-example}` is read as a variable called
-`sk-example`, which is not set, and the config is rejected. A key value can only come from the
-environment.
-
-## How one request works
-
-PlainRoute is a messenger, not a chef. The body it received goes out, and the answer
-it gets comes back. Five things happen:
-
-1. The `model` field is read as a route name, which selects one row of the table. A
-   row is the set of targets that can answer that name.
-2. One target in that row is picked: the one with the fewest requests in flight, or
-   the next one in order, and a tie keeps the order the config lists.
-3. The body goes out once. Only the bytes of the `model` value change, replaced in
-   place with the model of the target that was picked; the document is not rebuilt.
-4. The answer is copied back chunk by chunk and flushed per chunk. Nothing is parsed or
-   re-formed, so the bytes the upstream produced are the bytes the client receives.
-5. What is recorded is a routing fact: the route, the target, the status, the timings,
-   the byte count.
-
-A target that answered badly is taken out of the pool for the *next* request, not for
-this one: this request ends with the answer it already got. When every target in the
-row is out of the pool, the gateway answers from its own state instead of knocking,
-429 with `code: all_targets_cooling_down`.
-
-### Watch one request go through, without a provider
-
-The fake upstream answers with fixed frames on fixed paths, so the whole path can be
-watched without a real key. The value of `DEMO_KEY` is what selects its behaviour,
-because a key is what identifies a target:
-
-```bash
-go build -o bin/fakeupstream ./cmd/fakeupstream
-./bin/fakeupstream &            # on 127.0.0.1:8091
-
-cat > demo.yaml <<'YAML'
-routes:
-  demo:
-    targets:
-      - name: account-1
-        model: provider/model-one
-        base_url: http://127.0.0.1:8091/stream
-        api_key_env: DEMO_KEY
-YAML
-
-DEMO_KEY=anyvalue ./bin/plainroute -config demo.yaml &
-```
-
-With both running, send one request:
-
-```bash
-curl -s http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"demo","stream":true,"messages":[{"role":"user","content":"hi"}]}'
-```
-
-The client sent the route name `demo`, and what comes back is the three frames the
-upstream produced, unchanged:
-
-```text
-data: {"object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}
-
-data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}
-
-data: [DONE]
-```
-
-The log line for that request, from a real run of the commands above, wrapped here for
-reading:
-
-```json
-{"time":"2026-11-18T06:27:11.347272225Z","level":"INFO","msg":"request_completed",
- "request_id":"1576cb8152d90e00","route":"demo","model":"provider/model-one",
- "target":"account-1","status":200,"stream":true,"ttft_ms":0,"duration_ms":0,
- "bytes":180,"active":1}
-```
-
-`route` is the name the client sent, `model` is the model of the target that answered,
-and `bytes` is what was copied. The upstream counted exactly one attempt for that key,
-which is the promise the project makes:
-
-```bash
-curl -s http://127.0.0.1:8091/stats
-# {"attempts":{"anyvalue":1},"cancelled":null,"total":1}
-```
-
-One client request, one upstream request.
+`created` is the process start time, the same number on every entry. `models` is what sits
+inside the route; the sendable name is `id`.
 
 ## Route names and model names
 
