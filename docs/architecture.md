@@ -43,11 +43,11 @@ the walk is bounded by `fallbacks.max_hops`.
 
 | Package | What it owns | What it must not do |
 | --- | --- | --- |
-| `internal/config` | Load YAML strictly (unknown keys are errors), read the keys as values in the file, including the optional caller key, validate everything at once, apply defaults | Print a value it read from the file, which is a secret |
+| `internal/config` | Load YAML strictly (unknown keys are errors), read the keys as values in the file, including the optional caller key, validate everything at once, apply defaults, and name the fields a running process cannot act on | Print a value it read from the file, which is a secret |
 | `internal/routing` | Pools, selection, per-target state (active count, cooldown), state that survives a reload | Try another target inside one request |
 | `internal/proxy` | The request path as one generation per request: the config, the registry and the transport as one value that a reload swaps, taken once at the start and kept for the whole life of the request; the optional api key gate, body read, model splice, headers, the single attempt, streaming copy, error shape | Hold a model response in memory, re-form an SSE frame |
 | `internal/logging` | Structured logging with a fixed field set | Carry a key, a prompt, or response content |
-| `internal/reload` | Watch the one file the process started with: read it, hash the content, act only on content not acted on before, and swap one whole generation only after a complete read, parse and validate. Report one bad content once | Wait for a file to appear, crash on a half-written file, apply a file that did not validate, print a value it read, or poll faster than the floor its own config validation enforces |
+| `internal/reload` | Watch the one file the process started with: read it, hash the content for its own change detection, act only on content not acted on before, swap one whole generation only after a complete read, parse and validation, and refuse as a whole a change to a field the process captured at startup. Report one bad content once, and report the fields a refusal refused | Wait for a file to appear, crash on a half-written file, apply a file that did not validate, print a value it read or any part of the content hash, partly apply a refused file, or poll faster than the floor its own config validation enforces |
 | `internal/metrics` | Prometheus collectors, including the process itself | Report anything that is not a count, gauge, or histogram |
 | `cmd/plainroute` | Wiring only: load, listen, signals, drain | Decide anything about a request |
 | `internal/fakeupstream` | A controllable upstream for tests and the end-to-end script, keyed by API key value | Be a real provider |
@@ -185,13 +185,33 @@ entry for the name that was removed.
 once an interval and the content is hashed, so the state the watcher compares is the
 content and not the inode: an editor that saves in place and an editor that writes a temp
 file and renames it over the inode are the same change, a half-written file is one report,
-and a file that is briefly gone is one report. A `SIGHUP` is kept as the manual force for
-a look now, and a signal on content that has not changed is not a reload, because there is
-nothing to reload. What a change cannot be is an event: a filesystem event framework would
-add semantics this project would have to depend on, for a file of a few kilobytes, so the
-promise is one interval rather than an instant. The floor on the interval is a startup
-error, because a watcher that polled every millisecond is the busy loop the guard exists
-for.
+and a file that is briefly gone is one report. The hash is the change detector and it
+stays inside the watcher: no part of it is printed in a log line, on the metrics page or
+in a response, because the content is a secret file. What a reload line carries instead is
+the runtime generation, a count of the contents the process acted on, which names the
+configuration in force without being derived from what the file holds. A `SIGHUP` is kept
+as the manual force for a look now, and a signal on content that has not changed is not a
+reload, because there is nothing to reload. What a change cannot be is an event: a
+filesystem event framework would add semantics this project would have to depend on, for a
+file of a few kilobytes, so the promise is one interval rather than an instant. The floor
+on the interval is a startup error, because a watcher that polled every millisecond is the
+busy loop the guard exists for.
+
+**The boundary between a hot change and a restart is drawn from what the code reads**, and
+not from what a field is meant to do. A value a new request reads from the generation in
+force can change while the process runs; a value the process captured when it started
+cannot, because the listener, the server object, the logger and what the startup line
+reported were all built from the file as it was at startup. A file that changes a field on
+the startup side is refused as a whole, including the request-level fields written in the
+same file, because a running process cannot honour half of a change: the configuration in
+force stays the last one that was acted on, the process does not exit, and the next look
+tries again. The refusal names the fields and the reason,
+`restart_required_field_changed`, and never the values, because a field name is what an
+operator can act on and a value in this file is a secret. `internal/config/boundary.go` is
+the list, `internal/config/hotreload_table_test.go` compares it with the table in
+`README.md`, and case 17.8 of `scripts/e2e.sh` asks a real process which side a request
+answers from: a refused file does not route on the key it names, and the process is the
+same process that was listening before.
 
 **One generation per request.** A generation is the config, the registry built from it and
 the transport built from it as one value, and a request takes it once at its start and

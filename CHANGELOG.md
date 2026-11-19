@@ -71,6 +71,33 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   signal on a file that has not changed is not a reload, because there is nothing to
   reload. There is no filesystem event framework, on purpose: no events to lose and no
   events to debounce.
+- The line between a hot change and a restart is now enforced, and it is drawn from what
+  the code reads rather than from what a field is meant to do. A value a new request
+  reads from the configuration in force can change while the process runs; a value the
+  process captured when it started cannot, because the listener, the server object, the
+  logger and what the startup line reported were built from the file as it was at
+  startup. A file that changes a field on the startup side is refused as a whole,
+  including the request-level fields written in the same file: the configuration in
+  force stays the last one that was acted on, the process does not exit, and the next
+  look tries again. The refusal is reported as `config_reload_failed` with
+  `reason=restart_required_field_changed` and the names of the fields that changed,
+  never the values it refused, because a field name is what an operator can act on and
+  the file is a secret. `plainroute_config_reloads_total{outcome}` gains
+  `restart_required` as a value, which is what a reader of that counter should expect to
+  see after such a refusal. The Setting to Hot reload table in README.md is the same
+  list, and a test compares the table with the code so the two cannot drift.
+  `fallbacks.log_event` is not on the table because the code does not read it anywhere,
+  and `retry.enabled` is restart-required because nothing in the request path reads it:
+  the gateway does not retry inside one client request, so the flag changes only what
+  the startup line reports. No part of the content hash is printed in a log line, on the
+  metrics page or in a response, because the content is a secret file: the hash is the
+  watcher's own change detector. The reload line used to carry a short fingerprint, the
+  first five bytes of the SHA-256 of the file, and that field is gone. What it carries
+  instead is `generation`: a runtime counter that is 1 for the configuration the process
+  was built with and goes up by one for each content the process acted on, so a log line
+  can name the configuration in force without being derived from what the file holds.
+  The startup line reports the same number. A refused change does not make a new
+  generation.
 - A request now takes one whole generation at its start and keeps it for its whole life. A
   generation is the configuration, the registry built from it and the transport built from
   it as one value, swapped by one pointer, and nothing inside it is replaced in place, so

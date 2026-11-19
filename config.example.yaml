@@ -6,6 +6,13 @@
 # it reads from it. Copy this file, fill in the keys, and it is the file the gateway runs on.
 
 server:
+  # These are the fields a running process cannot change, because the listener and the
+  # server object were built from the file as it was at startup: listen, the three server
+  # timeouts, idle_timeout, shutdown_grace and max_header_bytes need a restart. A reload
+  # that changes one of them is refused as a whole, including the request-level fields
+  # written in the same file, and the refusal names the fields and not the values. The two
+  # size limits below are read on every request, so those do change while the process
+  # runs. The table in README.md lists which is which.
   listen: ":8080"
   read_header_timeout: 10s
   read_timeout: 30s
@@ -38,8 +45,13 @@ config_reload:
   # and without a signal, normally within one interval. 0 or absent here means one
   # second. A value under 100ms is a startup error rather than a silent clamp, because
   # a watcher that looked every millisecond is the busy loop this floor exists to
-  # prevent. SIGHUP is still the way to ask for a look now, when a change has to land
-  # at a particular moment.
+  # prevent. SIGHUP is still the way to ask for a look now, when a change has to land at a
+  # particular moment, and a signal on a file that has not changed is not a reload.  The
+  # content is hashed inside the watcher so one content is acted on once. No part of that
+  # hash is printed: the file you are reading is the secret. A reload line carries the
+  # path and the runtime generation, a count of the contents the process acted on. Which
+  # fields a change can apply, and
+  # which are refused because the process was built with them, is the table in README.md.
   interval: 1s
 
 routing:
@@ -69,16 +81,21 @@ routing:
     max: 15m
     timeout: 0s      # cools a target after a connection or idle failure; 0 disables
 
-# Off by default. The client owns backoff. When enabled, a retry only happens before any
-# byte of the upstream response has reached the client.
-retry:
+# Off by default. The client owns backoff.
+retry: # The gateway does not retry inside one client request, so nothing in the request
+path reads this # block: the startup line reports enabled, and validation checks both
+numbers. A change here cannot # be seen by a new request, so it needs a restart, and a
+reload that changes it is refused as a
+  # whole rather than half-applied.
   enabled: false
   max_attempts: 1
 
 # Off by default. Opt-in, bounded, and only possible before the first byte.
 fallbacks:
   enabled: false
-  max_hops: 1
+  max_hops: 1 # Not read by the code, in either direction: a fallback event is logged in
+  both cases, so this
+  # setting cannot change anything. It is listed here because a reader would otherwise expect it to.
   log_event: true
 
 headers:
@@ -88,9 +105,13 @@ headers:
   deny: [Cookie, X-Forwarded-For]
   forward_request_id: true
 
-logging:
+logging: # Built once, at startup, so these two cannot change while the process runs: a
+change here needs a # restart, and a reload that changes them is refused as a whole. There
+is no runtime logger swap, # because a logger that can be replaced from a config file is
+the framework this project stays out
+  # of.
   format: json      # json or text
-  level: info       # debug, info, warn, error
+  level: info       # debug, info, warn or error
 
 metrics:
   enabled: true

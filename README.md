@@ -228,12 +228,20 @@ inside the route; the sendable name is `id`.
 ## The config file is read while the process runs
 
 The file a gateway runs on is watched: the process reads it, hashes the content with
-SHA-256, and acts only on content it has not acted on before. A change to a key, a target,
-a route, a model name, a base URL, the strategy, `max_active` or `auth.api_key` is applied
-without a restart, normally within one reload interval. The interval is
-`config_reload.interval`: one second when nothing is written, and a value under 100ms is a
-startup error rather than a silent clamp, because a watcher that polled every millisecond
-is the busy loop the guard exists for.
+SHA-256, and acts only on content it has not acted on before. The hash is the change
+detector, and it stays inside the watcher: no part of it is printed in a log line, on
+the metrics page or in a response, because the content is a secret file. What a reload
+line carries instead is the path and the runtime generation: a counter that is 1 for the
+configuration the process was built with, and goes up by one for each content the
+process acted on. It names which configuration is in force without being derived from
+what the file holds.
+
+A change to a key, a target, a route, a model name, a base URL, the strategy,
+`max_active` or `auth.api_key` is applied without a restart, normally within one reload
+interval, which is what the first group of the table below means. The interval is
+`config_reload.interval`: one second when nothing is written, and a value under 100ms is
+a startup error rather than a silent clamp, because a watcher that polled every
+millisecond is the busy loop the guard exists for.
 
 The rule is last-known-good, and it is what makes editing a live file safe:
 
@@ -252,12 +260,92 @@ The rule is last-known-good, and it is what makes editing a live file safe:
   name, including a cooldown given before it was removed. Nothing evicts an entry, because
   which target a name is once the name is gone is a rule the file cannot state, so a
   long-lived process keeps one small object per name the file has ever used.
-- A reload line carries the path and a short fingerprint of the content, the first five
-  bytes of the hash, and never a value it read, because the file is a secret.
+- A reload line carries the path and the generation, and never a value it read or any
+  part of the content hash, because the file is a secret.
+
+### What a running process can act on, and what needs a restart
+
+The line is drawn from what the code reads, and not from what a field is meant to do: a
+value a new request reads from the configuration in force can change while the process
+runs, and a value the process captured when it started cannot, because the listener, the
+server object, the logger and what the startup line reported were all built from the
+file as it was at startup.
+
+A change to a field in the second group is refused as a whole, including the
+request-level fields written in the same file, because that part of the change cannot be
+honoured by a running process: the configuration in force stays the last one that was
+acted on. The refusal is reported as `config_reload_failed` with
+`reason=restart_required_field_changed` and the names of the fields that changed. A
+refusal shows names, never the values it refused, because a field name is what an
+operator can act on and a value in this file is a secret. Refusing the whole file is the
+point: a file a reader reads and a process that is running must not disagree about a
+field.
+
+| Setting | Change |
+| --- | --- |
+| `auth.api_key` | hot reload |
+| `config_reload.interval` | hot reload |
+| `fallbacks.enabled` | hot reload |
+| `fallbacks.max_hops` | hot reload |
+| `headers.allow` | hot reload |
+| `headers.deny` | hot reload |
+| `headers.extra` | hot reload |
+| `headers.forward_request_id` | hot reload |
+| `headers.mode` | hot reload |
+| `metrics.enabled` | hot reload |
+| `metrics.path` | hot reload |
+| `routes.<name>.fallbacks` | hot reload |
+| `routes.<name>.targets[].api_key` | hot reload |
+| `routes.<name>.targets[].base_url` | hot reload |
+| `routes.<name>.targets[].headers` | hot reload |
+| `routes.<name>.targets[].max_active` | hot reload |
+| `routes.<name>.targets[].model` | hot reload |
+| `routes.<name>.targets[].name` | hot reload |
+| `routes.<name>.targets[].path` | hot reload |
+| `routing.cooldown.max` | hot reload |
+| `routing.cooldown.status` | hot reload |
+| `routing.cooldown.timeout` | hot reload |
+| `routing.strategy` | hot reload |
+| `server.max_request_bytes` | hot reload |
+| `server.max_response_bytes` | hot reload |
+| `timeouts.connect` | hot reload |
+| `timeouts.request` | hot reload |
+| `timeouts.response_header` | hot reload |
+| `timeouts.stream_idle` | hot reload |
+| `logging.format` | restart |
+| `logging.level` | restart |
+| `retry.enabled` | restart |
+| `retry.max_attempts` | restart |
+| `server.idle_timeout` | restart |
+| `server.listen` | restart |
+| `server.max_header_bytes` | restart |
+| `server.read_header_timeout` | restart |
+| `server.read_timeout` | restart |
+| `server.shutdown_grace` | restart |
+| `server.write_timeout` | restart |
+The rows are checked against `internal/config` by a test, so the table cannot claim a
+field is hot while the code reads it only on the startup path.
+
+`server.shutdown_grace` is read when the process is shutting down, from the configuration
+the process was built with, and not from the configuration in force at that moment: a
+request that is already running holds its own generation, and there is no runtime logger
+or listener swap in this project, because that would be the framework this project stays
+out of.
+
+`retry.enabled` and `retry.max_attempts` are restart-required for a different reason:
+nothing in the request path reads them, because the gateway does not retry inside one
+client request. The startup line reports `retry.enabled`, and validation checks both, so
+a change to them cannot be seen by a new request.
+
+`fallbacks.log_event` is not in the table because the code does not read it anywhere: a
+fallback event is logged in both cases, so the setting cannot change anything, in either
+direction. That is a fact about the code as it is, not a reload rule.
 
 `SIGHUP` stays as the manual force: it asks for a look now instead of at the next tick. A
 signal on a file that has not changed is not a reload, because there is nothing to reload,
-so it is a no-op rather than a rebuild.
+so it is a no-op rather than a rebuild. A signal cannot make a restart-required field
+change, because there is nothing in the process that reads it again: the refusal is the
+answer, and the restart is the way to act on it.
 
 There is no filesystem event framework on purpose. The file is a few kilobytes, and one
 look a second finds the cases that matter: a save in place, a temp file renamed over the
@@ -581,9 +669,11 @@ to slow down. Retrying also makes the numbers impossible to read: you cannot pro
 client requests and upstream attempts are the same, because they are not.
 
 The client owns backoff, because the client is the one who knows whether a request is
-worth repeating. `retry.enabled` exists for people who insist, and when it is on, a retry
-only happens before any byte of the upstream response has reached the client. Once bytes
-are on the wire, there is no taking them back.
+worth repeating. `retry.enabled` exists for people who insist, and the code as it stands
+does not retry inside one client request: nothing in the request path reads the flag, so
+a change to it decides only what the startup line reports, which is why the hot-reload
+table lists it as restart-required. Once bytes are on the wire, there is no taking them
+back, and that is the rule any retry rule here would have to keep.
 
 There is a regression test for this: 50 client requests must never produce more than 50
 upstream attempts, and the metrics must report the same numbers.

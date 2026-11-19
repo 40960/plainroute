@@ -10,9 +10,11 @@ with the values redacted, and what happened. If a reproduction exists, include i
 
 Redact `api_key` in a report. The config file is the secret, so a report should name the
 field and the problem rather than paste the file: the code names the field it refused and
-never prints the value it read, and a report should do the same. A fingerprint of the
-content, which is the first five bytes of the SHA-256 of the file, identifies which
-content a process acted on without revealing what it holds.
+never prints the value it read, and a report should do the same. The SHA-256 the watcher
+uses to tell one content from another is internal: no part of it appears in a log line, on
+the metrics page or in a response. Where a report has to say which content a process acted
+on, it names the runtime generation — a count of the contents that process acted on, and
+not a value derived from the file.
 
 A fix lands as an ordinary commit, and the advisory is published when the fix is out.
 
@@ -73,6 +75,15 @@ cannot aim a request at a key it was not given.
   force stays the last one that was valid. A request keeps the generation it started with
   for its whole life, so a reload cannot hand a request the limits of one configuration
   and the targets of another.
+- **A change the running process cannot act on is refused, not half-applied.** A field the
+  process captured when it started cannot change while the process runs: the listener, the
+  server timeouts, the header cap, the logger, the shutdown grace period, and the retry
+  block. A file that changes one of those is refused as a whole, including the
+  request-level fields written in the same file, and reported with
+  `reason=restart_required_field_changed` and the names of the fields that changed. The
+  configuration in force stays the last one that was acted on, the process does not exit,
+  and no value from the file is printed with the refusal: names only. So a file and a
+  running process cannot disagree about a field, which is the property the tests pin.
 - **Size limits are enforced before forwarding**, in both directions.
 - **A `Retry-After` from an upstream is clamped**, so a hostile or broken value cannot make
   a target unavailable for an unreasonable time.

@@ -70,6 +70,12 @@ failing.
   the request before it reaches the upstream. The break has to reach the read the check is
   about: a stale key, not a frozen generation, is what makes a check about which key answered
   able to fail, and a check that needs both halves of a decision needs both halves broken.
+- A claim about which fields a running process can act on is checked by a test that
+  reads the code, not by the table that states it:
+  `internal/config/hotreload_table_test.go` compares the table in `README.md` with the
+  set in `internal/config/boundary.go`. A document cannot check itself, and a table that
+  a reviewer maintains can say a field is hot while the code reads it only on the
+  startup path.
 - A check about something that happens while the process runs has to be able to fail on a
   process that never looked. Drive the watcher with `Tick()` in a unit test, or in the
   end-to-end script wait with a deadline instead of sleeping a fixed time, and make a run
