@@ -803,6 +803,35 @@ has "and the bad level is in it too" 'level' "$out"
 has "and the query in the url is in it too" 'query' "$out"
 not_has "and none of them prints the value the file holds" "$secret" "$out"
 
+# A field that no code reads is not a field the loader takes. The two fields removed for having no
+# reader are refused by name, so a file that writes one gets an answer that says the field does not
+# exist, rather than being accepted and ignored. The numbers below are values that could only come from
+# the message: a message that printed what it read would print them.
+cat > "$WORK/removedfields.yaml" <<YAML
+server:
+  # 8098, a port no gateway this script starts listens on, so a process that failed for a different
+  # reason would not answer these checks.
+  listen: 127.0.0.1:8098
+retry: 918273647
+fallbacks:
+  log_event: 918273648
+routes:
+  startupcheck:
+    targets:
+      - name: fields-are-gone
+        model: startupcheck
+        base_url: https://example.invalid/v1
+        api_key: $secret
+YAML
+out=$(timeout 10 "$BIN/plainroute" -config "$WORK/removedfields.yaml" 2>&1); code=$?
+check "a file that writes a field this project no longer has stops the process before it listens" "1" "$code"
+has "and names the field it refused, which is what an operator can act on" 'retry' "$out"
+has "and names the other one in the same error, because every problem is reported at once" 'log_event' "$out"
+not_has "and prints neither value it read, at startup, which is the rule for every config error in this package" '918273647\|918273648' "$out"
+# The other half of the rule is that a file writing the fields the schema does have is still accepted.
+# That is what every gateway this script starts proves, and the shipped example is checked against the
+# loader by a test in internal/config, so the file a new user copies cannot drift from the schema.
+
 printf '\n12. the cooldown window: the clamp, the map, and what a reload keeps\n'
 # The number a client sees is the window the gateway applied, not the number the upstream
 # printed. The checks allow the value to drop by one second between requests, because it is the
@@ -1662,6 +1691,49 @@ check "and the generation is one more than the last applied one, because the ref
   "$((gen_before + 1))" "$(grep 'config_reloaded' "$WORK/gateway.log" | tail -1 | gen)"
 check "and it is still the same process, so this was not a restart" "1" \
   "$(grep -c '"msg":"listening"' "$WORK/gateway.log")"
+
+# 17.9 a field the schema does not have is refused at reload as well as at startup. The two fields
+# removed for having no reader are refused by name, so a live file that writes one gets an answer that
+# says the field does not exist, and the configuration in force keeps serving. A loader that accepted
+# and ignored such a field would tell an operator the file said something.
+cp "$WORK/config.yaml" "$WORK/config-good-179.yaml"
+cat > "$WORK/config.yaml" <<YAML
+server:
+  # The listen value is left as the one in force, so the refusal here is the unknown field and not a
+  # process-level change: the two rules have to be answerable apart from each other.
+  listen: 127.0.0.1:8080
+retry: 918273649
+fallbacks:
+  log_event: 918273650
+routes:
+  hotpair:
+    targets:
+      - name: pair-1
+        model: hotpair
+        base_url: http://127.0.0.1:8091/pair-a
+        api_key: e2e-hot-179
+YAML
+
+baseline=$(reloadcount failed)
+check "a live file that writes a field the schema does not have is reported" "$((baseline + 1))" "$(wait_for failed "$baseline")"
+refusal=$(grep 'config_reload_failed' "$WORK/gateway.log" | tail -1)
+has "the refusal names the field it refused" 'field retry not found' "$refusal"
+has "and the other one, in the same message, because every problem is reported at once" 'field log_event not found' "$refusal"
+not_has "and prints neither value it read, which is the rule for every config error in this package" '918273649\|918273650' \
+  "$(grep 'config_reload' "$WORK/gateway.log"; curl -s http://127.0.0.1:8080/metrics)"
+check "and the gateway is still serving, on the last file that was acted on" "ok" "$(curl -s http://127.0.0.1:8080/healthz)"
+check "and it is the same process, so this was not a restart" "1" "$(grep -c '"msg":"listening"' "$WORK/gateway.log")"
+stats
+base_179=$(count e2e-hot-h)
+check "and a request still routes on the configuration in force" "200" "$(post_to 8080 hotpair /dev/null)"
+stats
+check "and that request went to the key the last good file named, so nothing from the refused file was applied" \
+  "$((base_179 + 1))" "$(count e2e-hot-h)"
+check "and the key only the refused file names was never used" "0" "$(count e2e-hot-179)"
+cp "$WORK/config-good-179.yaml" "$WORK/config.yaml"
+baseline=$(reloadcount ok)
+check "and the file coming back to fields the schema has is applied, so the refusal did not freeze the watcher" \
+  "$((baseline + 1))" "$(wait_for ok "$baseline")"
 
 printf '\n%d checks: %s\n' "$CHECKS" "$([ "$FAIL" = 0 ] && echo 'all passed' || echo 'failures')"
 exit "$FAIL"
