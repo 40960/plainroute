@@ -222,5 +222,6 @@ jobs:
 
             ## Run
 
-            See the README. The image needs a config file and the environment variables it names; keys
-            are never inside the image.
+            See the README. The image takes a config file, and keys are values inside that file: nothing
+            in the program reads a key from the environment, so a key cannot enter the image by a name a
+            running process inherited. `PLAINROUTE_CONFIG` only says where the file is.

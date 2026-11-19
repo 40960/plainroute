@@ -131,12 +131,14 @@ It is checked on the API endpoints only, before any byte of the request body is 
 not part of the streaming path and cannot change what reaches the client. The caller key and
 the target key are different things, and the tests keep them apart: a caller key that is
 accepted is never the key the upstream sees. A rejected request is counted as one the gateway
-answered from its own state, with `route="none"`. A gate that is named in the config but whose
-variable is not set stops the process at load, because a half-configured gate reads as a
-working one. Health, readiness and the metrics page stay open, because they carry counts and a
-monitoring system that cannot authenticate is the ordinary case. A gate that can be configured
-but is off by default does not change the invariants; a table of keys, per-caller quotas, or
-accounts would.
+answered from its own state, with `route="none"`. The gate has one source, the file, so it
+cannot be half-configured: nothing written under `auth` is off, and an empty `api_key` is off
+in the same way. A target with no `api_key` is a startup failure that names the target,
+because a target that would send no authorisation header is not half-configured but broken.
+Health, readiness and the metrics page stay open, because they carry counts and a monitoring
+system that cannot authenticate is the ordinary case. A gate that can be configured but is off
+by default does not change the invariants; a table of keys, per-caller quotas, or accounts
+would.
 
 **A metric label never holds client input.** The route label is a configured route name, or
 the constant `none` when the gateway answered before any route was resolved. The name a client

@@ -117,11 +117,11 @@ metrics:
 # open, because a monitoring system that cannot authenticate is the ordinary case and those
 # pages carry counts only.
 #
-# There is no half state: the value written here is the value in force, so a gate that reads as on
-# in the file is on. The old form named an environment variable, and a gate named by a variable could
-# be on with a value this project did not choose, because a generic name such as API_KEY can be
-# exported by another program in the same shell. Writing the value is the whole fix, and the field is
-# refused now instead of ignored.
+# There is no half state: the value written here is the value in force, so a gate that reads as on in
+# the file is on, and nothing else can supply it. The old form named an environment variable, and a
+# generic name such as API_KEY can be exported by another program in the same shell, so a gate could
+# be on with a value this project did not choose. That form is gone: writing `api_key_env` is refused
+# as an unknown key. Writing the value is the whole fix.
 # auth:
 #   api_key: replace-me
 
