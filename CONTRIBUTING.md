@@ -58,6 +58,23 @@ failing.
 - A check that cannot fail is not a check. Before an assertion is committed, break the
   code it reads once and show that the check fails, then put it back. A needle that
   matches whatever the implementation prints passes without proving anything.
+- A check that can only pass is not an assertion either. When a claim cannot be made to
+  fail without inventing a path the implementation does not have, write it as an invariant
+  and say that, the way `SECURITY.md` writes the reload claim about a stream.
+- A check has to read something the implementation decides, not something the fixture
+  wrote before the implementation was consulted. A check that looks for bytes the fake
+  upstream writes before the gateway reads its own limits can only pass, because the bytes
+  arrive either way. Ask for the thing the decision can deny, such as the terminal frame
+  of a stream that a cap read late would cut off.
+- A check that counts what the upstream saw passes for the wrong reason when the break stops
+  the request before it reaches the upstream. The break has to reach the read the check is
+  about: a stale key, not a frozen generation, is what makes a check about which key answered
+  able to fail, and a check that needs both halves of a decision needs both halves broken.
+- A check about something that happens while the process runs has to be able to fail on a
+  process that never looked. Drive the watcher with `Tick()` in a unit test, or in the
+  end-to-end script wait with a deadline instead of sleeping a fixed time, and make a run
+  that checks a swap long enough for the swap to land inside it. A check that only slept
+  passes on a watcher that never read the file.
 - The fake upstream is keyed by the API key value, because that is what identifies a
   target.
 

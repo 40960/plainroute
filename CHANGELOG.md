@@ -55,6 +55,35 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
 
 ### Behaviour
 
+- The config file is watched, so a change is applied without a restart and without a
+  signal. The process reads the file, hashes the content with SHA-256, and acts only on
+  content it has not acted on before. `config_reload.interval` is one second when nothing
+  is written, and a value under 100ms is a startup error rather than a silent clamp,
+  because a watcher that polled every millisecond is the busy loop the guard exists for.
+  Last-known-good is the rule: a file that decodes but does not validate is reported and
+  not applied, nothing is partly applied, the process does not exit, and the next look
+  tries again. Startup stays strict, because before the first configuration there is
+  nothing good to keep, which is why the watcher never waits for a file to appear. A half-
+  written file, and a file that is briefly gone, are reported once: one bad content is one
+  report and one count, not a line every second. Both ways an editor writes a file are
+  seen, the save in place and the temp file renamed over the inode, because the state is
+  the content and not the inode. `SIGHUP` stays as the manual force for a look now, and a
+  signal on a file that has not changed is not a reload, because there is nothing to
+  reload. There is no filesystem event framework, on purpose: no events to lose and no
+  events to debounce.
+- A request now takes one whole generation at its start and keeps it for its whole life. A
+  generation is the configuration, the registry built from it and the transport built from
+  it as one value, swapped by one pointer, and nothing inside it is replaced in place, so
+  a reload cannot hand a running request the limits of one configuration and the targets
+  of another. Target state comes from the state store keyed by route and target name, so a
+  target that is still configured keeps its cooldown and its count of requests in flight
+  across a reload, including a reload that only changed its key.
+- `plainroute_config_reloads_total{outcome}` counts reloads that acted on changed content,
+  one count per distinct content. Before this, every `SIGHUP` was a reload; now a signal
+  on a file that has not changed is not one, and a file that stays bad is counted once
+  rather than once per look. A reader comparing two runs of this counter should not expect
+  the number of signals.
+
 - Load balancing now covers targets that can differ by more than the key: model, endpoint,
   path, headers and `max_active` are all per target. The set behind one route name is the set
   that gets balanced; two route names are never balanced against each other, and one reaches

@@ -45,8 +45,9 @@ the walk is bounded by `fallbacks.max_hops`.
 | --- | --- | --- |
 | `internal/config` | Load YAML strictly (unknown keys are errors), read the keys as values in the file, including the optional caller key, validate everything at once, apply defaults | Print a value it read from the file, which is a secret |
 | `internal/routing` | Pools, selection, per-target state (active count, cooldown), state that survives a reload | Try another target inside one request |
-| `internal/proxy` | The request path: the optional api key gate, body read, model splice, headers, the single attempt, streaming copy, error shape | Hold a model response in memory, re-form an SSE frame |
+| `internal/proxy` | The request path as one generation per request: the config, the registry and the transport as one value that a reload swaps, taken once at the start and kept for the whole life of the request; the optional api key gate, body read, model splice, headers, the single attempt, streaming copy, error shape | Hold a model response in memory, re-form an SSE frame |
 | `internal/logging` | Structured logging with a fixed field set | Carry a key, a prompt, or response content |
+| `internal/reload` | Watch the one file the process started with: read it, hash the content, act only on content not acted on before, and swap one whole generation only after a complete read, parse and validate. Report one bad content once | Wait for a file to appear, crash on a half-written file, apply a file that did not validate, print a value it read, or poll faster than the floor its own config validation enforces |
 | `internal/metrics` | Prometheus collectors, including the process itself | Report anything that is not a count, gauge, or histogram |
 | `cmd/plainroute` | Wiring only: load, listen, signals, drain | Decide anything about a request |
 | `internal/fakeupstream` | A controllable upstream for tests and the end-to-end script, keyed by API key value | Be a real provider |
@@ -167,10 +168,38 @@ provider to the gateway, which is what this project calls a bug when the provide
 answered. An operator who knows their provider's window should set it explicitly rather than
 rely on the prior.
 
-**Cooldown state survives a reload.** Target state is keyed by route and target name
-in a `StateStore`, so rebuilding the registry after a `SIGHUP` does not clear a cooldown for a
+**Cooldown state survives a reload.** Target state is keyed by route and target name in a
+`StateStore`, so rebuilding the registry after a reload does not clear a cooldown for a
 target that is still configured. A failed reload keeps the running config, because a bad
 edit should not break a working gateway.
+
+A name the file no longer names is not reachable, and the same name written again is the
+same target by that key, so it gets the state recorded for that name, including a cooldown
+given before the name was removed. Nothing evicts an entry, because which target a name is
+once the name is gone is a rule a hand-written config cannot state, so a process keeps one
+small object per name the file has ever used. `internal/routing/pool_test.go` checks both
+halves: that the name which came back is the same state, and that the store still holds an
+entry for the name that was removed.
+
+**Watching, not signalling, is how a change reaches a running process.** The file is read
+once an interval and the content is hashed, so the state the watcher compares is the
+content and not the inode: an editor that saves in place and an editor that writes a temp
+file and renames it over the inode are the same change, a half-written file is one report,
+and a file that is briefly gone is one report. A `SIGHUP` is kept as the manual force for
+a look now, and a signal on content that has not changed is not a reload, because there is
+nothing to reload. What a change cannot be is an event: a filesystem event framework would
+add semantics this project would have to depend on, for a file of a few kilobytes, so the
+promise is one interval rather than an instant. The floor on the interval is a startup
+error, because a watcher that polled every millisecond is the busy loop the guard exists
+for.
+
+**One generation per request.** A generation is the config, the registry built from it and
+the transport built from it as one value, and a request takes it once at its start and
+keeps it for its whole life. A reload swaps the pointer; nothing inside a generation is
+replaced in place, so a request cannot read the limits of one configuration and the
+targets of another. This is what makes the observable check in the end-to-end script mean
+something: the key a request reached and the path it reached have to belong to the same
+version of the file, because both came from the same generation.
 
 **Readiness is not affected by an upstream cooldown.** A target that is cooling down is
 still a healthy process. Readiness goes false only while draining, which is what a load
@@ -192,19 +221,20 @@ test that gets flaky.
 
 Two kinds of tests, and each answers a different question:
 
-- **Unit tests** in `internal/proxy`, `internal/routing`, `internal/config`,
-  `internal/metrics`, and `internal/fakeupstream`: the request path against `httptest`, with the fake upstream keyed
-  by API key value. These check the invariants, including flush-per-chunk timing, a stream
-  that goes silent, an upstream that drops the connection mid-stream, a client that leaves,
-  header filtering, redirects not being followed, goroutine counts after load, the 50-request
-  no-amplification check, the api key gate: accepted, rejected, off when nothing is
-  configured, applied after a reload, and never forwarded upstream, and the metric label names
-  as the page prints them: a test built on `WithLabelValues` matches values only, so it cannot
-  see whether a label is named `route` or `model`. The fake upstream has its
-  own tests, because every other test depends on it doing what it promises.
-- **`scripts/e2e.sh`**: the fake upstream and the gateway as two real processes, checking the
-  seven end-to-end cases. This is the check a unit test cannot replace, because it verifies the
-  binary, the config loader, and the signals with nothing mocked.
+- - **Unit tests** in `internal/proxy`, `internal/routing`, `internal/config`,
+  `internal/reload`, `internal/metrics`, and `internal/fakeupstream`: the request path
+  against `httptest`, with the fake upstream keyed by API key value. These check the
+  invariants, including flush-per-chunk timing, a stream that goes silent, an upstream
+  that drops the connection mid-stream, a client that leaves, header filtering, redirects
+  not being followed, goroutine counts after load, the 50-request no-amplification check,
+  the api key gate: accepted, rejected, off when nothing is configured, applied after a
+  reload, and never forwarded upstream, and the metric label names as the page prints
+  them: a test built on `WithLabelValues` matches values only, so it cannot see whether a
+  label is named `route` or `model`. The fake upstream has its own tests, because every
+  other test depends on it doing what it promises. - **`scripts/e2e.sh`**: the fake
+  upstream and the gateway as two real processes, checking the seven end-to-end cases.
+  This is the check a unit test cannot replace, because it verifies the binary, the config
+  loader, and the signals with nothing mocked.
 
 `cmd/bench` is not a performance target. It is a consistency check: the numbers the client
 measured must match the numbers the gateway reports, and every gauge must return to zero

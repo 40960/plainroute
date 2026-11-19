@@ -34,9 +34,6 @@ endorsement or an affiliation.
 - Per-target cooldown: for an error status the window is
   `routing.cooldown.status[<code>]` when the upstream did not send a `Retry-After`, and
   the value the upstream sent when it did, clamped by `routing.cooldown.max`, which 0
-- Per-target cooldown: for an error status the window is
-  `routing.cooldown.status[<code>]` when the upstream did not send a `Retry-After`, and
-  the value the upstream sent when it did, clamped by `routing.cooldown.max`, which 0
   turns off. A status with no entry, or an entry of 0, does not cool a target down, and
   the map a file leaves out is `429: 10s` alone.
 - Model name mapping: the model name comes from the target that was picked, and the
@@ -49,8 +46,10 @@ endorsement or an affiliation.
   name in the listing says what is inside a route, it is not a name a client can send.
 - Streaming responses are copied chunk by chunk and flushed per chunk, so the bytes the
   upstream produced arrive as the bytes the client receives.
-- Structured logs, Prometheus metrics, health and readiness endpoints, SIGHUP reload,
-  graceful shutdown.
+- Structured logs, Prometheus metrics, health and readiness endpoints, graceful shutdown,
+  and a config file that is watched: a change is applied without a restart, within one
+  reload interval, and a change that does not validate leaves the configuration in force
+  exactly as it was. `SIGHUP` is the optional immediate look.
 - An optional api key gate for the API endpoints: off when nothing is configured, one
   constant-time comparison when it is.
 
@@ -183,9 +182,11 @@ chmod 600 config.yaml
 ```
 
 The api keys are values in the config file, so the file a gateway runs on is a secret: 600
-permissions, the directory 700, gitignored, and never in an image layer. The example config in the
-repository has placeholders only, and `scripts/generate-config.py` writes placeholders only, so the
-only way a real key gets into a file is a person typing it in.
+permissions, the directory 700, gitignored, and never in an image layer. It is also the
+file the process keeps reading, so a change you make after startup is applied without a
+restart, as the section below sets out. The example config in the repository has
+placeholders only, and `scripts/generate-config.py` writes placeholders only, so the only
+way a real key gets into a file is a person typing it in.
 
 A target with no `api_key` is a startup failure that names the target, and the error reports every
 problem in the file at once instead of one per run. Startup stays strict because before the first
@@ -223,6 +224,52 @@ What the example config prints, from a real run:
 
 `created` is the process start time, the same number on every entry. `models` is what sits
 inside the route; the sendable name is `id`.
+
+## The config file is read while the process runs
+
+The file a gateway runs on is watched: the process reads it, hashes the content with
+SHA-256, and acts only on content it has not acted on before. A change to a key, a target,
+a route, a model name, a base URL, the strategy, `max_active` or `auth.api_key` is applied
+without a restart, normally within one reload interval. The interval is
+`config_reload.interval`: one second when nothing is written, and a value under 100ms is a
+startup error rather than a silent clamp, because a watcher that polled every millisecond
+is the busy loop the guard exists for.
+
+The rule is last-known-good, and it is what makes editing a live file safe:
+
+- A file that decodes but does not validate is reported and not applied. Nothing is partly
+  applied, the process does not exit, and the next look tries again. Startup is the one
+  place a bad file is fatal, because before the first configuration there is nothing good
+  to keep.
+- A file that is half written, or briefly gone, is reported once. One bad content is one
+  report, not a log line and a counter every second.
+- A request keeps the configuration it started with for its whole life, so a reload cannot
+  hand a request the limits of one configuration and the targets of another. Target state
+  is keyed by route and target name, so a target that is still configured keeps its
+  cooldown and its count of requests in flight across a reload, including a reload that
+  only changed its key. A name the file no longer names cannot be reached, and the same
+  name written again is the same target by that key: it gets the state recorded for that
+  name, including a cooldown given before it was removed. Nothing evicts an entry, because
+  which target a name is once the name is gone is a rule the file cannot state, so a
+  long-lived process keeps one small object per name the file has ever used.
+- A reload line carries the path and a short fingerprint of the content, the first five
+  bytes of the hash, and never a value it read, because the file is a secret.
+
+`SIGHUP` stays as the manual force: it asks for a look now instead of at the next tick. A
+signal on a file that has not changed is not a reload, because there is nothing to reload,
+so it is a no-op rather than a rebuild.
+
+There is no filesystem event framework on purpose. The file is a few kilobytes, and one
+look a second finds the cases that matter: a save in place, a temp file renamed over the
+inode, content that is half written, a file that is briefly gone, and a file inside a
+mounted directory in a container. It does not depend on the event semantics of a platform,
+so there are no events to lose and no events to debounce. A change is not promised at a
+precise instant: it is promised within one interval, and if a change has to land at a
+particular moment, that is what the signal is for.
+
+One process, one file: no config database, no admin API, no remote config, no per-secret
+files and no credential source behind the file. A change on one node is a change on that
+node only.
 
 ## Route names and model names
 
@@ -617,7 +664,7 @@ the image, so an image payload travels as bytes.
 | `plainroute_client_disconnects_total{route,target}` | Clients that went away |
 | `plainroute_stream_aborts_total{route,target,reason}` | Streams ended by the gateway |
 | `plainroute_gateway_rejected_total{route,code}` | Requests the gateway answered from its own state |
-| `plainroute_config_reloads_total{outcome}` | SIGHUP reloads, by outcome |
+| `plainroute_config_reloads_total{outcome}` | Reloads that acted on changed content, by outcome. One count per distinct content: a file that stays bad is counted once, and a signal that changes nothing is not a reload |
 | `plainroute_in_flight_requests` | Requests being handled right now |
 | `go_goroutines`, `go_memstats_heap_alloc_bytes`, `process_resident_memory_bytes` | The process itself |
 
@@ -638,6 +685,13 @@ values are `transport`, `timeout`, `stream_idle`, `client_gone`.
 disabled they should be the same number for proxied requests, and the difference is exactly
 the requests the gateway answered itself. `cmd/bench` reads these numbers from the gateway
 rather than counting them on the client, and fails if they disagree.
+
+A retry by the client is a new client request, so it raises both counters by one. Nothing
+here raises `requests_total` without a request, and nothing raises
+`upstream_attempts_total` without an upstream call, so a reader who expected
+`upstream_attempts_total` to stay flat while a client retried was reading the wrong pair:
+a retried request is not the same request, and the gateway has no way to know it came from
+the same conversation.
 
 When the api key gate is on, its rejections are part of that difference: they are counted by
 the gateway from its own state, with `route="none"` and `code="invalid_api_key"`, and no
@@ -791,10 +845,16 @@ a reader reads is the file that runs, which is what makes this checkable from th
 a caller presents is not the key the provider sees, so if the provider works when you send the caller
 key directly, you are testing the wrong value.
 
-**Reload did nothing.** A failed `SIGHUP` reload keeps the running config instead of
-breaking a working gateway. The failure is logged and counted in
-`plainroute_config_reloads_total{outcome="failed"}`. Target state, including cooldowns,
-survives a successful reload.
+**A change to the file does not show up.** The watcher looks once an interval, so a change
+shows up within one interval; a `SIGHUP` is the way to ask for a look now. In a container,
+a single-file bind mount is the usual reason: it pins the inode the container started
+with, so a file the editor replaces is not the file the process reads, and the content the
+process hash-checked never changes. Mount the config as a directory. The other usual
+reason is that the change was not applied: a file that decodes but does not validate is
+reported and not applied, and the configuration that was in force keeps serving. That
+failure is logged and counted in `plainroute_config_reloads_total{outcome="failed"}`, one
+count per distinct content, so a file that stays bad is counted once rather than once per
+look. Target state, including cooldowns, survives a reload that does apply.
 
 ## License
 
@@ -819,11 +879,16 @@ BASE_URL=https://your-host/v1 API_KEY=... MODEL=... ./scripts/smoke-openai-compa
 ```
 
 CI runs the unit tests, the end-to-end script and the licence-header check on every
-push. A claim CI cannot check is written as a measurement with the command that takes
-it, not as a fact: the image size and the container settings need a docker daemon, and
-the model list falls back to a snapshot only when the live endpoint gives nothing. Every
-end-to-end assertion here was shown to fail once by breaking the code it reads, so a
-green run means something.
+push. A claim CI cannot check is written as a measurement with the command that takes it,
+not as a fact: the image size and the container settings need a docker daemon, and the
+model list falls back to a snapshot only when the live endpoint gives nothing. Every
+end-to-end assertion that can be broken was shown to fail once by breaking the code it
+reads, so a green run means something. One reload claim cannot be broken without
+inventing a path the implementation does not have: that a reload does not cancel a
+stream already running. It is written as an invariant in `SECURITY.md`, together with
+the two reload claims that first looked unbreakable and were then shown to fail, once
+the break read one value twice instead of once, and with the reason a check that looks
+for bytes the fake upstream wrote before the gateway decided anything can only pass.
 
 ### Generating a config
 

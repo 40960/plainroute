@@ -33,6 +33,15 @@ timeouts:
   # 0 means no overall limit, which is what a long reasoning stream needs.
   request: 0s
 
+config_reload:
+  # The file you are reading is watched: a change to it is applied without a restart
+  # and without a signal, normally within one interval. 0 or absent here means one
+  # second. A value under 100ms is a startup error rather than a silent clamp, because
+  # a watcher that looked every millisecond is the busy loop this floor exists to
+  # prevent. SIGHUP is still the way to ask for a look now, when a change has to land
+  # at a particular moment.
+  interval: 1s
+
 routing:
   # least_active (default) or round_robin. Ties keep the order they appear in this file,
   # so a selection is reproducible instead of random.
