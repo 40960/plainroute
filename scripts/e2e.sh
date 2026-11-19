@@ -69,6 +69,32 @@ reloadcount() {
   curl -s http://127.0.0.1:8080/metrics | grep "plainroute_config_reloads_total{outcome=\"$1\"}" | awk '{print $2}'
 }
 
+# A change is applied by the watcher, so the checks that follow a change wait for it. The bound is six
+# intervals: a check that only slept a fixed time would pass on a watcher that never looked, and a wait
+# without a bound would hang instead of failing when a change is not applied.
+wait_for() { # outcome, the count before the change
+  end=$((SECONDS + 6))
+  while [ "$(reloadcount "$1")" = "$2" ] && [ "$SECONDS" -lt "$end" ]; do
+    sleep 0.2
+  done
+  reloadcount "$1"
+}
+
+# The gate is checked on the API endpoints only, so a caller-key check sends one request and prints the
+# status code. "none" presents no header, which is the case a gate that reads as on in the file has to
+# answer.
+caller() {
+  if [ "$1" = none ]; then
+    curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+      -d '{"model":"hotpair","messages":[{"role":"user","content":"prompt-zq"}]}' \
+      http://127.0.0.1:8080/v1/chat/completions
+  else
+    curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
+      -d '{"model":"hotpair","messages":[{"role":"user","content":"prompt-zq"}]}' \
+      http://127.0.0.1:8080/v1/chat/completions
+  fi
+}
+
 # What the upstream received for a key is one line per fact, which is how a check can
 # tell what the gateway forwarded from what the client sent. A key that was never sent says
 # so, so a check for an absent header cannot pass because the record is empty.
@@ -109,7 +135,7 @@ go build -o "$BIN/plainroute-bench" ./cmd/bench
 # A process left over from an earlier run answers the checks instead of the one this
 # script starts, so a run can pass for the wrong reason or fail for one that is not its
 # own.
-for port in 8080 8091 8092 8093 8094 8095 8096 8097 8098 8099 8100 8101; do
+for port in 8080 8091 8092 8093 8094 8095 8096 8097 8098 8099 8100 8101 8102; do
   if (exec 9<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null; then
     printf 'something is already listening on 127.0.0.1:%s. Stop it before running this script.\n' "$port" >&2
     exit 1
@@ -160,6 +186,23 @@ cat > "$WORK/behaviors.json" <<'JSON'
   "e2e-dist-6": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
   "e2e-dist-7": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
   "e2e-dist-8": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-hot-a": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-hot-b": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-hot-d": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-hot-f": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-hot-g": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "PLAINROUTE_TEST_SECRET_DO_NOT_LEAK_918273645": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-hot-c": {
+    "sequence": [
+      {
+        "status": 200,
+        "sse": ["data: frame one\n\n", "data: frame two\n\n", "data: [DONE]\n\n"],
+        "gap": "4s",
+        "wait_for_cancel": true
+      },
+      { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" }
+    ]
+  },
   "e2e-rafar": {
     "status": 429,
     "headers": { "Retry-After": "7200" },
@@ -1163,6 +1206,351 @@ check "an endpoint that accepts an empty messages array is reported, not praised
 has "and names which check failed" '  FAIL  error answer is its own' "$(cat "$WORK/smoke-empty.txt")"
 check "and the other six checks still passed" "7 checks: 1 failed" "$(tail -1 "$WORK/smoke-empty.txt")"
 
+printf '\n17. the watcher: a changed file is applied without a signal, and a bad file keeps the last good one\n'
+
+# This is the same process the script started at the beginning. Nothing in this case sends a signal and
+# nothing is restarted: the change is found by the watcher looking at the file, which is what the feature
+# is for, and the checks say so by checking that the same process is still there and that its log has
+# exactly one startup line.
+#
+# Every step here writes the whole file, because writing the file is the change. A check that reads the
+# effect sends a request after the change is applied, so the answer comes from what is in force at that
+# moment, and not from a counter that only says a read happened.
+secret=PLAINROUTE_TEST_SECRET_DO_NOT_LEAK_918273645
+strategy=least_active
+cap=200
+interval=1s
+held_cap=1
+caller_key=
+targets='      - name: pair-1
+        model: hotpair
+        base_url: http://127.0.0.1:8091/pair-a
+        api_key: PLAINROUTE_TEST_SECRET_DO_NOT_LEAK_918273645'
+
+write_config() { # the targets block for route hotpair
+  {
+    printf 'server:\n  listen: 127.0.0.1:8080\n  max_response_bytes: %s\n' "$cap"
+    printf 'config_reload:\n  interval: %s\n' "$interval"
+    printf 'routing:\n  strategy: %s\n  cooldown:\n    max: 60s\n' "$strategy"
+    printf 'routes:\n  hotpair:\n    targets:\n%s' "$1"
+    printf '\n  hotstream:\n    targets:\n      - name: held\n        model: hotstream\n        base_url: http://127.0.0.1:8091/held\n        api_key: e2e-hot-c\n        max_active: %s\n' "$held_cap"
+    if [ -n "$caller_key" ]; then
+      printf 'auth:\n  api_key: %s\n' "$caller_key"
+    fi
+  } > "$WORK/config.yaml"
+}
+
+# The file case 12 left on disk was refused, so writing a valid one here is the recovery case: content
+# coming back to being valid is a change, and a change is acted on without a signal.
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "content coming back to being valid is a change, and it is applied with no signal"   "$((baseline + 1))" "$(wait_for ok "$baseline")"
+
+# 17.1 a key is a value in the file, so rotating it is a change to the file, and the running process picks
+# it up with no signal.
+stats
+base_needle=$(count "$secret")
+check "the file as written routes on the key it names" "200" "$(post_to 8080 hotpair /dev/null)"
+stats
+check "and the record is for that key" "$((base_needle + 1))" "$(count "$secret")"
+
+targets='      - name: pair-1
+        model: hotpair
+        base_url: http://127.0.0.1:8091/pair-a
+        api_key: e2e-hot-b'
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "the changed file is applied with no signal and no restart" "$((baseline + 1))" "$(wait_for ok "$baseline")"
+check "and the same process is still serving" "alive" "$(kill -0 "$GATEWAY_PID" 2>/dev/null && echo alive)"
+check "and its log has exactly one startup line, so this was not a restart" "1" \
+  "$(grep -c '"msg":"listening"' "$WORK/gateway.log")"
+
+stats
+base_old=$(count "$secret")
+base_new=$(count e2e-hot-b)
+check "a request now goes to the key the changed file names" "200" "$(post_to 8080 hotpair /dev/null)"
+stats
+check "and that key is the one that answered" "$((base_new + 1))" "$(count e2e-hot-b)"
+check "and the key the file no longer names is not used again" "$base_old" "$(count "$secret")"
+has "the reload line names the file it read and a fingerprint of the content" 'fingerprint' \
+  "$(grep 'config_reloaded' "$WORK/gateway.log" | tail -1)"
+
+# 17.2 a file that decodes but does not validate is refused, and the configuration in force is the last
+# one that was valid. Only the running process can answer which configuration routes.
+cp "$WORK/config.yaml" "$WORK/config-good.yaml"
+cat > "$WORK/config.yaml" <<'YAML'
+server:
+  listen: 127.0.0.1:8080
+routing:
+  cooldown:
+    max: -1s
+routes:
+  badfilecheck:
+    targets:
+      - name: not-applied
+        model: badfilecheck
+        base_url: http://127.0.0.1:8091/v1
+        api_key: PLAINROUTE_TEST_SECRET_DO_NOT_LEAK_918273645
+YAML
+
+baseline=$(reloadcount failed)
+check "a file that decodes but does not validate is reported" "$((baseline + 1))" "$(wait_for failed "$baseline")"
+check "and the gateway is still serving" "ok" "$(curl -s http://127.0.0.1:8080/healthz)"
+check "and the process is the same one, so a bad file did not take it down" "alive" \
+  "$(kill -0 "$GATEWAY_PID" 2>/dev/null && echo alive)"
+check "a route only the refused file names is not in use" "404" "$(post_to 8080 badfilecheck /dev/null)"
+not_has "and neither the log nor the metrics page prints the value the refused file held" "$secret" \
+  "$(cat "$WORK/gateway.log"; curl -s http://127.0.0.1:8080/metrics)"
+stats
+base_good=$(count e2e-hot-b)
+check "and the configuration that was in force keeps serving, on the key the last good file named" \
+  "200" "$(post_to 8080 hotpair /dev/null)"
+stats
+check "and that request went to the key the last good file named, so nothing from the refused file was applied" \
+  "$((base_good + 1))" "$(count e2e-hot-b)"
+
+# Three more looks at the same content: one problem, reported once. A file that stays bad must not become
+# a log line and a counter every second, so this waits past three intervals and checks the numbers did
+# not move.
+before_failed=$(reloadcount failed)
+before_lines=$(grep -c 'config_reload_failed' "$WORK/gateway.log")
+sleep 4
+check "the same bad content is not counted again over three more looks" "$before_failed" "$(reloadcount failed)"
+check "and it is not logged again" "$before_lines" "$(grep -c 'config_reload_failed' "$WORK/gateway.log")"
+
+cp "$WORK/config-good.yaml" "$WORK/config.yaml"
+baseline=$(reloadcount ok)
+check "the file coming back to valid is applied, and the refusal did not replace what was in force" \
+  "$((baseline + 1))" "$(wait_for ok "$baseline")"
+check "and the route the refused file named is still not in use, because that content was never applied" \
+  "404" "$(post_to 8080 badfilecheck /dev/null)"
+
+# 17.3 what a reload changes, read back from what the upstream received. The target name does not change
+# through any of this, which is what keeps its state: each fact below is a fact about the one target the
+# changed file writes, so an answer can only come from the configuration that is in force.
+targets='      - name: pair-1
+        model: hotmodel
+        base_url: http://127.0.0.1:8091/pair-b
+        api_key: e2e-hot-b'
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "the model and the base_url the changed file writes are the ones in use" \
+  "$((baseline + 1))" "$(wait_for ok "$baseline")"
+check "and a request is served by the target the changed file names" "200" "$(post_to 8080 hotpair /dev/null)"
+has "and its body carries the model as the changed file writes it" 'hotmodel' "$(field e2e-hot-b body)"
+check "and it arrived on the path the changed file names" '/pair-b/chat/completions' "$(field e2e-hot-b path)"
+
+# A target the file adds is a target the running config did not have, and one it no longer names is a
+# target it no longer has. While both targets are idle, least_active keeps configuration order, so the
+# order the requests go is what says which set of targets and which strategy is in force.
+targets='      - name: pair-1
+        model: hotmodel
+        base_url: http://127.0.0.1:8091/pair-b
+        api_key: e2e-hot-b
+      - name: pair-2
+        model: hotmodel
+        base_url: http://127.0.0.1:8091/pair-c
+        api_key: e2e-hot-d'
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "the target the file added is applied" "$((baseline + 1))" "$(wait_for ok "$baseline")"
+
+stats
+first=$(count e2e-hot-b)
+second=$(count e2e-hot-d)
+for _ in 1 2 3 4; do post_to 8080 hotpair /dev/null > /dev/null; done
+stats
+check "least_active keeps configuration order while both targets are idle" "$((first + 4))" "$(count e2e-hot-b)"
+check "and the target the file added is not used yet" "$second" "$(count e2e-hot-d)"
+
+strategy=round_robin
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "the strategy the changed file names is applied" "$((baseline + 1))" "$(wait_for ok "$baseline")"
+before_b=$(count e2e-hot-b)
+for _ in 1 2; do post_to 8080 hotpair /dev/null > /dev/null; done
+stats
+check "and the requests now alternate, which is the strategy in the file and not the one the process started with" \
+  "$((before_b + 1))" "$(count e2e-hot-b)"
+check "and the other request went to the target the file added" "$((second + 1))" "$(count e2e-hot-d)"
+
+targets='      - name: pair-1
+        model: hotmodel
+        base_url: http://127.0.0.1:8091/pair-b
+        api_key: e2e-hot-b'
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "the target the file removed is applied" "$((baseline + 1))" "$(wait_for ok "$baseline")"
+stats
+before=$(count e2e-hot-d)
+check "the route is still served, by the target that is left" "200" "$(post_to 8080 hotpair /dev/null)"
+stats
+check "and the key the removed target had is not used again" "$before" "$(count e2e-hot-d)"
+
+# 17.4 a stream that was already running when the file changed keeps the generation it started with. The
+# order is made certain by the fake upstream: it writes the first frame, then waits four seconds before
+# the next one, so the change is applied while the request is in the middle of it. What the request still
+# has to decide afterwards is how much of the body it may read, and that is where a handler that read the
+# configuration twice shows up.
+touch "$WORK/held.txt"
+curl -s -N --max-time 20 -o "$WORK/held.txt" -H 'Content-Type: application/json' \
+  -d '{"model":"hotstream","stream":true,"messages":[{"role":"user","content":"prompt-zq"}]}' \
+  http://127.0.0.1:8080/v1/chat/completions > /dev/null &
+held=$!
+
+stats
+base_held=$(count e2e-hot-c)
+end=$((SECONDS + 6))
+while [ "$(count e2e-hot-c)" = "$base_held" ] && [ "$SECONDS" -lt "$end" ]; do
+  sleep 0.2
+  stats
+done
+stats
+check "the stream reached the upstream, so it was in flight when the file changed" "$((base_held + 1))" \
+  "$(count e2e-hot-c)"
+has "and the first frame arrived before the change, which is what makes the frame that follows the one read after it" 'frame one' "$(cat "$WORK/held.txt")"
+
+cap=10
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "the cap the changed file names is applied while that stream is still running" \
+  "$((baseline + 1))" "$(wait_for ok "$baseline")"
+
+status=$(post_to 8080 hotstream "$WORK/full.txt")
+check "while the stream holds the only slot of its cap, the next request is answered from state with no \
+upstream call" "429" "$status"
+has "and the answer is the code for every target being full" 'No healthy targets are currently available' \
+  "$(cat "$WORK/full.txt")"
+stats
+check "and that request cost no upstream call, so the answer came from the state the stream is holding" \
+  "$((base_held + 1))" "$(count e2e-hot-c)"
+
+held_cap=2
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "the value the changed file writes is applied while the stream still holds a slot" \
+  "$((baseline + 1))" "$(wait_for ok "$baseline")"
+check "and the next request fits under it, which only the state that is still holding the slot can say" \
+  "200" "$(post_to 8080 hotstream /dev/null)"
+stats
+check "and that request is one upstream attempt on the key that was already holding a slot, so the state \
+survived the reload" "$((base_held + 2))" "$(count e2e-hot-c)"
+
+check "and the stream is not cancelled by the reload" "" \
+  "$(grep -o '"cancelled":\[[^]]*\]' "$WORK/stats.json" | grep -o 'e2e-hot-c' | head -1)"
+
+wait "$held" 2>/dev/null
+has "and the whole stream arrives, because the cap that ends a stream is the one in force when it starts, \
+not the one that arrives later" 'frame two' "$(cat "$WORK/held.txt")"
+has "and the terminal frame of that stream is in the bytes the client got, which is what a cap read after the change would have denied" '\[DONE\]' "$(cat "$WORK/held.txt")"
+stats
+has "and the client leaving is what cancelled that stream, so the check above answered the right thing" \
+  'e2e-hot-c' "$(grep -o '"cancelled":\[[^]]*\]' "$WORK/stats.json")"
+
+# 17.5 one whole generation per request, across a reload: the key a request reached and the path it
+# reached have to belong to the same version of the file, because a request takes one snapshot and keeps
+# it. A pairing no version of the file wrote is a request that read the file twice.
+targets='      - name: pair-1
+        model: hotmodel
+        base_url: http://127.0.0.1:8091/pair-f
+        api_key: e2e-hot-f'
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "the first version of the file for this run is applied" "$((baseline + 1))" "$(wait_for ok "$baseline")"
+
+stats
+base_f=$(count e2e-hot-f)
+check "a request before the change goes to the key that version names" "200" "$(post_to 8080 hotpair /dev/null)"
+stats
+check "and its record names the path that version wrote" "$((base_f + 1))" "$(count e2e-hot-f)"
+
+targets='      - name: pair-1
+        model: hotmodel
+        base_url: http://127.0.0.1:8091/pair-g
+        api_key: e2e-hot-g'
+write_config "$targets"
+
+# The run is sent over a window longer than one reload interval, so the swap lands inside it: a run that
+# ended before the watcher looked could only have checked one side, and a check on one side cannot tell a
+# request that read the file twice from one that did not. Each key belongs to one version of the file, and
+# so does the path its record names, so a pairing that no version of the file wrote is the mixed read.
+mixed=0
+seen_f=0
+seen_g=0
+base_f=$(count e2e-hot-f)
+base_g=$(count e2e-hot-g)
+baseline=$(reloadcount ok)
+end=$((SECONDS + 3))
+while [ "$SECONDS" -lt "$end" ]; do
+  status=$(post_to 8080 hotpair /dev/null)
+  if [ "$status" != "200" ]; then
+    fail "a request in the run across the reload was not served"
+    break
+  fi
+  stats
+  key=""
+  want=""
+  if [ "$(count e2e-hot-f)" -gt "$base_f" ]; then
+    key=e2e-hot-f
+    base_f=$(count e2e-hot-f)
+    want='/pair-f/chat/completions'
+    seen_f=$((seen_f + 1))
+  elif [ "$(count e2e-hot-g)" -gt "$base_g" ]; then
+    key=e2e-hot-g
+    base_g=$(count e2e-hot-g)
+    want='/pair-g/chat/completions'
+    seen_g=$((seen_g + 1))
+  fi
+  if [ -z "$key" ]; then
+    fail "a request in the run reached neither key, so the upstream did not record it"
+    break
+  fi
+  if [ "$(field "$key" path)" != "$want" ]; then
+    mixed=$((mixed + 1))
+  fi
+done
+check "the reload applied inside the run, so requests on both sides of the swap were checked" \
+  "$((baseline + 1))" "$(reloadcount ok)"
+check "and the run really crossed it, which is what makes the pairing check mean something" "1" \
+  "$([ "$seen_f" -gt 0 ] && [ "$seen_g" -gt 0 ] && echo 1)"
+check "and no request paired a key with the path the other version of the file wrote" "0" "$mixed"
+
+# 17.6 the floor is a startup error, not a silent clamp: a file that would make the watcher a busy loop
+# stops the process before it listens.
+cat > "$WORK/floor.yaml" <<'YAML'
+server:
+  listen: 127.0.0.1:8102
+config_reload:
+  interval: 50ms
+routes:
+  floorcheck:
+    targets:
+      - name: floor
+        model: floorcheck
+        base_url: http://127.0.0.1:8091/v1
+        api_key: e2e-hot-f
+YAML
+out=$(timeout 10 "$BIN/plainroute" -config "$WORK/floor.yaml" 2>&1); code=$?
+check "a reload interval under the floor is a startup error" "1" "$code"
+has "and says what it expects" 'config_reload.interval must be 100ms or more' "$out"
+check "and the process did not listen" "" "$(curl -s --max-time 3 http://127.0.0.1:8102/healthz)"
+
+# 17.7 the caller key rotates the same way: the gate is a value in the file, so changing it changes the
+# gate for new requests, and the process is still the same process.
+caller_key=e2e-caller-old
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "the gate is applied from the file without a signal" "$((baseline + 1))" "$(wait_for ok "$baseline")"
+check "a request without a key is refused" "401" "$(caller none)"
+check "a request with the key the file names is served" "200" "$(caller e2e-caller-old)"
+
+caller_key=e2e-caller-new
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "the caller key is rotated by the watcher" "$((baseline + 1))" "$(wait_for ok "$baseline")"
+check "and the key the file no longer names no longer opens the gate" "401" "$(caller e2e-caller-old)"
+check "and the key the file now names does" "200" "$(caller e2e-caller-new)"
+check "and the same process served both" "alive" "$(kill -0 "$GATEWAY_PID" 2>/dev/null && echo alive)"
 printf '\n%d checks: %s\n' "$CHECKS" "$([ "$FAIL" = 0 ] && echo 'all passed' || echo 'failures')"
 exit "$FAIL"
 

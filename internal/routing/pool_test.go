@@ -317,6 +317,89 @@ routes:
 	reloadedPool.Release(d)
 }
 
+// TestARemovedTargetNameKeepsItsStateUntilItIsNamedAgain writes down the semantics the key gives,
+// because they are observable. State is keyed by route and target name, so a name that is removed from
+// the file cannot be reached through the registry, and the same name written again gets the same state
+// object, including a cooldown that was given to that name while it was configured. Nothing evicts an
+// entry: deciding which target a name is once the name is gone would need a rule this file cannot state,
+// so the cost is one small object per name the file has ever used, which for a hand-written config of a
+// few dozen targets is a few kilobytes and nothing else.
+func TestARemovedTargetNameKeepsItsStateUntilItIsNamedAgain(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(1700000000, 0)}
+	store := NewStateStore()
+
+	first, err := config.Parse([]byte(`
+routes:
+  demo:
+    targets:
+      - name: account-1
+        model: provider/model-one
+        base_url: http://127.0.0.1:8081
+        api_key: k1
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	r1 := New(first, store, clock.Now)
+	pool1 := r1.routes["demo"]
+	pool1.Cooldown(pool1.Targets[0], 10*time.Second, "rate_limit")
+	state := store.Get("demo", "account-1")
+
+	// The name is gone from the file, so the registry has no target that can answer for it.
+	second, err := config.Parse([]byte(`
+routes:
+  demo:
+    targets:
+      - name: account-2
+        model: provider/model-one
+        base_url: http://127.0.0.1:8082
+        api_key: k2
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	pool2 := New(second, store, clock.Now).routes["demo"]
+	if len(pool2.Targets) != 1 || pool2.Targets[0].Name != "account-2" {
+		t.Fatalf("the removed name is still in the pool: %v", pool2.Targets)
+	}
+	for _, target := range pool2.Targets {
+		if target.state == state {
+			t.Error("a name the file no longer names is still reachable through the registry")
+		}
+	}
+
+	// The same name written again, with a different key, is the same target by the key, so the cooldown
+	// that name was given is still in force, and the pool says so by not selecting it.
+	third, err := config.Parse([]byte(`
+routes:
+  demo:
+    targets:
+      - name: account-1
+        model: provider/model-two
+        base_url: http://127.0.0.1:8083
+        api_key: k3
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	pool3 := New(third, store, clock.Now).routes["demo"]
+	if pool3.Targets[0].state != state {
+		t.Error("the name that came back got a different state, so the cooldown recorded for that name was lost")
+	}
+	if _, ok := pool3.Pick(); ok {
+		t.Error("the name that came back is selectable, so the cooldown recorded for that name is not in force")
+	}
+
+	// Nothing evicts, which is the other half of the claim: the store holds the state for both names this
+	// test wrote, and it keeps them until the process restarts.
+	if len(store.states) != 2 {
+		t.Errorf("the store holds %d states, want one for each name the file wrote", len(store.states))
+	}
+}
+
 func TestLookupUsesRouteNamesOnly(t *testing.T) {
 	cfg, err := config.Parse([]byte(`
 routes:
