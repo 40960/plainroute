@@ -46,9 +46,6 @@ routes:
 	if cfg.Server.WriteTimeout != 0 {
 		t.Errorf("write timeout: got %s, want 0 so streaming is not cut", cfg.Server.WriteTimeout)
 	}
-	if cfg.Retry.Enabled {
-		t.Error("retry must default to disabled")
-	}
 	if cfg.Fallback.Enabled {
 		t.Error("fallbacks must default to disabled")
 	}

@@ -148,7 +148,7 @@ routes:
 	for _, name := range []string{
 		"server.listen", "server.read_header_timeout", "server.read_timeout", "server.write_timeout",
 		"server.idle_timeout", "server.shutdown_grace", "server.max_header_bytes",
-		"logging.format", "logging.level", "retry.enabled", "retry.max_attempts",
+		"logging.format", "logging.level",
 	} {
 		if _, ok := processLevelFields(inForce)[name]; !ok {
 			t.Errorf("the boundary does not include %s", name)
@@ -173,9 +173,6 @@ func TestAnAbsentValueAndItsDefaultAreTheSameValue(t *testing.T) {
 logging:
   format: json
   level: info
-retry:
-  enabled: false
-  max_attempts: 1
 ` + oneRoute))
 	if err != nil {
 		t.Fatalf("parse: %v", err)

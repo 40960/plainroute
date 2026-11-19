@@ -31,13 +31,6 @@ func processLevelFields(cfg *Config) map[string]string {
 		// change here cannot be acted on without starting the process again.
 		"logging.format": cfg.Logging.Format,
 		"logging.level":  cfg.Logging.Level,
-
-		// Nothing in the request path reads the retry block: the gateway does not retry inside one
-		// client request, so these values decide only what the startup line reports, and the
-		// startup line is not run again. A field the running process cannot act on is not
-		// half-applied; it is refused.
-		"retry.enabled":      strconv.FormatBool(cfg.Retry.Enabled),
-		"retry.max_attempts": strconv.Itoa(cfg.Retry.MaxAttempts),
 	}
 }
 

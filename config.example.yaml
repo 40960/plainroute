@@ -46,7 +46,7 @@ config_reload:
   # second. A value under 100ms is a startup error rather than a silent clamp, because
   # a watcher that looked every millisecond is the busy loop this floor exists to
   # prevent. SIGHUP is still the way to ask for a look now, when a change has to land at a
-  # particular moment, and a signal on a file that has not changed is not a reload.  The
+  # particular moment, and a signal on a file that has not changed is not a reload. The
   # content is hashed inside the watcher so one content is acted on once. No part of that
   # hash is printed: the file you are reading is the secret. A reload line carries the
   # path and the runtime generation, a count of the contents the process acted on. Which
@@ -81,22 +81,13 @@ routing:
     max: 15m
     timeout: 0s      # cools a target after a connection or idle failure; 0 disables
 
-# Off by default. The client owns backoff.
-retry: # The gateway does not retry inside one client request, so nothing in the request
-path reads this # block: the startup line reports enabled, and validation checks both
-numbers. A change here cannot # be seen by a new request, so it needs a restart, and a
-reload that changes it is refused as a
-  # whole rather than half-applied.
-  enabled: false
-  max_attempts: 1
-
-# Off by default. Opt-in, bounded, and only possible before the first byte.
+# Off by default. Opt-in, bounded, and only possible before the first byte. Both fields here are
+# read by the request path. There is no retry block in this file, and writing one is a startup
+# error: the client owns backoff, and a retry setting would be a field a loader can read that no
+# code can use.
 fallbacks:
   enabled: false
-  max_hops: 1 # Not read by the code, in either direction: a fallback event is logged in
-  both cases, so this
-  # setting cannot change anything. It is listed here because a reader would otherwise expect it to.
-  log_event: true
+  max_hops: 1
 
 headers:
   # Hop-by-hop headers are always dropped, in both directions. mode "deny" (default)
@@ -105,11 +96,11 @@ headers:
   deny: [Cookie, X-Forwarded-For]
   forward_request_id: true
 
-logging: # Built once, at startup, so these two cannot change while the process runs: a
-change here needs a # restart, and a reload that changes them is refused as a whole. There
-is no runtime logger swap, # because a logger that can be replaced from a config file is
-the framework this project stays out
-  # of.
+logging:
+  # Built once, at startup, so these two cannot change while the process runs: a change here needs
+  # a restart, and a reload that changes them is refused as a whole. There is no runtime logger
+  # swap, because a logger that can be replaced from a config file is the framework this project
+  # stays out of.
   format: json      # json or text
   level: info       # debug, info, warn or error
 

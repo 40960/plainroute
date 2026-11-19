@@ -61,7 +61,6 @@ type Config struct {
 	Server   ServerConfig           `yaml:"server"`
 	Timeouts TimeoutsConfig         `yaml:"timeouts"`
 	Routing  RoutingConfig          `yaml:"routing"`
-	Retry    RetryConfig            `yaml:"retry"`
 	Fallback FallbackConfig         `yaml:"fallbacks"`
 	Headers  HeadersConfig          `yaml:"headers"`
 	Logging  LoggingConfig          `yaml:"logging"`
@@ -164,20 +163,18 @@ func (c CooldownConfig) MaxStd() time.Duration {
 	return c.Max.Std()
 }
 
-// RetryConfig is off by default. PlainRoute does not retry inside one client
-// request; the client owns backoff. When enabled, a retry only happens before
-// any byte of the upstream response has reached the client.
-type RetryConfig struct {
-	Enabled     bool `yaml:"enabled"`
-	MaxAttempts int  `yaml:"max_attempts"`
-}
-
-// FallbackConfig is off by default. Falling back to a different model is opt-in,
-// bounded, and only allowed before the first byte reaches the client.
+// There is no retry block, and writing one is a startup error. The client owns backoff, and the
+// gateway does not retry inside one client request, so a retry block was a config that nothing
+// read: it could parse, validate and be documented while changing nothing. A field a loader can
+// read but no code can use is the failure mode this project keeps out of its config, so the rule
+// now is that every field has to have a reader, and this one had none.
+//
+// FallbackConfig is off by default. Falling back to a different model is opt-in, bounded, and only
+// allowed before the first byte reaches the client. Both fields here are read by the request path;
+// the logging switch this block used to carry is gone for the same reason the retry block is.
 type FallbackConfig struct {
-	Enabled  bool `yaml:"enabled"`
-	MaxHops  int  `yaml:"max_hops"`
-	LogEvent bool `yaml:"log_event"`
+	Enabled bool `yaml:"enabled"`
+	MaxHops int  `yaml:"max_hops"`
 }
 
 // HeadersConfig controls which request headers reach the upstream. Hop-by-hop
@@ -318,9 +315,6 @@ func applyDefaults(cfg *Config) {
 		cfg.Routing.Cooldown.Max = &max
 	}
 
-	if cfg.Retry.MaxAttempts <= 0 {
-		cfg.Retry.MaxAttempts = 1
-	}
 	if cfg.Fallback.MaxHops <= 0 {
 		cfg.Fallback.MaxHops = 1
 	}
@@ -398,10 +392,6 @@ func validate(cfg *Config) error {
 		if dur < 0 {
 			problems = append(problems, fmt.Sprintf("routing.cooldown.status[%d] must be zero or positive", status))
 		}
-	}
-
-	if cfg.Retry.Enabled && cfg.Retry.MaxAttempts > 10 {
-		problems = append(problems, "retry.max_attempts must be 10 or less when retry is enabled")
 	}
 
 	switch cfg.Headers.Mode {

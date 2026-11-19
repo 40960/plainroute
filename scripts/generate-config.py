@@ -87,10 +87,6 @@ routing:
     max: {cooldown_max}
     timeout: 0s
 
-retry:
-  enabled: false
-  max_attempts: 1
-
 fallbacks:
   enabled: false
   max_hops: 1

@@ -96,7 +96,6 @@ func main() {
 		"listen", cfg.Server.Listen,
 		"routes", len(cfg.Routes),
 		"strategy", cfg.Routing.Strategy,
-		"retry_enabled", cfg.Retry.Enabled,
 		"stream_idle", cfg.Timeouts.StreamIdle.String(),
 		"version", version,
 		"gate", gate,

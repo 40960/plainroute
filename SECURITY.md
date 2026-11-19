@@ -77,8 +77,8 @@ cannot aim a request at a key it was not given.
   and the targets of another.
 - **A change the running process cannot act on is refused, not half-applied.** A field the
   process captured when it started cannot change while the process runs: the listener, the
-  server timeouts, the header cap, the logger, the shutdown grace period, and the retry
-  block. A file that changes one of those is refused as a whole, including the
+  server timeouts, the header cap, the logger, and the shutdown grace period. A file that
+  changes one of those is refused as a whole, including the
   request-level fields written in the same file, and reported with
   `reason=restart_required_field_changed` and the names of the fields that changed. The
   configuration in force stays the last one that was acted on, the process does not exit,

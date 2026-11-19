@@ -52,6 +52,15 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   nobody chose for it. Writing the value down is the whole fix, and the startup rule that a named
   variable must be set went with the lookup that rule existed for. A field a reader reads is now a
   field that runs, and that is the property the tests pin.
+- `retry:` is gone, and `fallbacks.log_event` is gone with it. Both parsed, validated and could
+  be documented, while no code read them: the gateway does not retry inside one client request,
+  so the retry block decided only what the startup line reported, and a fallback event is logged
+  whatever `log_event` said. A field an operator can set and get nothing from is the failure mode
+  this project keeps out of its config, so every field in the schema now has to have a named
+  reader, and a test in `internal/config` compares the schema against that list. Writing either
+  key fails at load as an unknown key rather than being accepted and ignored. This is a breaking
+  change for a file that wrote them; the project is early and carries no compatibility burden, so
+  the fields are removed rather than implemented to make the documents true.
 
 ### Behaviour
 
@@ -85,11 +94,10 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   the file is a secret. `plainroute_config_reloads_total{outcome}` gains
   `restart_required` as a value, which is what a reader of that counter should expect to
   see after such a refusal. The Setting to Hot reload table in README.md is the same
-  list, and a test compares the table with the code so the two cannot drift.
-  `fallbacks.log_event` is not on the table because the code does not read it anywhere,
-  and `retry.enabled` is restart-required because nothing in the request path reads it:
-  the gateway does not retry inside one client request, so the flag changes only what
-  the startup line reports. No part of the content hash is printed in a log line, on the
+  list, and a test compares the table with the code so the two cannot drift. The two fields that used
+  to be on it are gone: `retry` had no reader in the request path and `fallbacks.log_event` had no
+  reader anywhere, so `restart-required` is not used as a cover for a field that does nothing. No part
+  of the content hash is printed in a log line, on the
   metrics page or in a response, because the content is a secret file: the hash is the
   watcher's own change detector. The reload line used to carry a short fingerprint, the
   first five bytes of the SHA-256 of the file, and that field is gone. What it carries

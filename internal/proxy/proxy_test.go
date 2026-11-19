@@ -713,8 +713,6 @@ routes:
         model: provider/model-one
         base_url: https://fake.invalid/v1
         api_key: key-d
-retry:
-  enabled: false
 `)
 
 	for _, key := range []string{"key-a", "key-b", "key-c", "key-d"} {

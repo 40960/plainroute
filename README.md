@@ -314,8 +314,6 @@ field.
 | `timeouts.stream_idle` | hot reload |
 | `logging.format` | restart |
 | `logging.level` | restart |
-| `retry.enabled` | restart |
-| `retry.max_attempts` | restart |
 | `server.idle_timeout` | restart |
 | `server.listen` | restart |
 | `server.max_header_bytes` | restart |
@@ -332,14 +330,15 @@ request that is already running holds its own generation, and there is no runtim
 or listener swap in this project, because that would be the framework this project stays
 out of.
 
-`retry.enabled` and `retry.max_attempts` are restart-required for a different reason:
-nothing in the request path reads them, because the gateway does not retry inside one
-client request. The startup line reports `retry.enabled`, and validation checks both, so
-a change to them cannot be seen by a new request.
-
-`fallbacks.log_event` is not in the table because the code does not read it anywhere: a
-fallback event is logged in both cases, so the setting cannot change anything, in either
-direction. That is a fact about the code as it is, not a reload rule.
+Every row in this table is a field something reads, and the table is the whole schema as
+the loader sees it. `retry` and `fallbacks.log_event` used to be rows here, and they are
+gone because nothing read them: a field that parses, validates and can be documented
+while no code uses it is a setting an operator can set and get nothing from. Writing
+`retry:` or `fallbacks.log_event` now fails at load as an unknown key, which is the
+answer a strict loader can give, and a test in `internal/config` compares the schema
+against the list of what reads each field. A field accepted and ignored is the failure
+mode this project keeps out, so `restart-required` is not a cover for a field that does
+nothing.
 
 `SIGHUP` stays as the manual force: it asks for a look now instead of at the next tick. A
 signal on a file that has not changed is not a reload, because there is nothing to reload,
@@ -453,9 +452,6 @@ routes:
         model: gpt-4o-mini
         base_url: https://api.openai.com/v1
         api_key: replace-me-personal
-
-retry:
-  enabled: false
 ```
 
 Account A returns 429. That request ends with the upstream error, exactly as the provider
@@ -669,11 +665,10 @@ to slow down. Retrying also makes the numbers impossible to read: you cannot pro
 client requests and upstream attempts are the same, because they are not.
 
 The client owns backoff, because the client is the one who knows whether a request is
-worth repeating. `retry.enabled` exists for people who insist, and the code as it stands
-does not retry inside one client request: nothing in the request path reads the flag, so
-a change to it decides only what the startup line reports, which is why the hot-reload
-table lists it as restart-required. Once bytes are on the wire, there is no taking them
-back, and that is the rule any retry rule here would have to keep.
+worth repeating. There is no `retry` block to set here: the flag could be written and
+checked while nothing in the request path read it, so it is gone and writing `retry:`
+fails at load. Once bytes are on the wire, there is no taking them back, and that is the
+rule any retry rule here would have to keep.
 
 There is a regression test for this: 50 client requests must never produce more than 50
 upstream attempts, and the metrics must report the same numbers.
