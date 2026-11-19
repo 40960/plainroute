@@ -80,6 +80,15 @@ wait_for() { # outcome, the count before the change
   reloadcount "$1"
 }
 
+# The generation a reload line reports is read from the line the process wrote. Both sides of these
+# checks come out of what the process printed, so a check cannot pass on a number the script picked.
+gen() { sed -n 's/.*"generation":\([0-9]\{1,\}\).*/\1/p'; }
+
+# The hash of the bytes the script wrote, which is the same content the process read. A check can name
+# it because the script computed it outside the process; what is checked is that the process did not
+# print it, in either form.
+sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+
 # The gate is checked on the API endpoints only, so a caller-key check sends one request and prints the
 # status code. "none" presents no header, which is the case a gate that reads as on in the file has to
 # answer.
@@ -135,7 +144,7 @@ go build -o "$BIN/plainroute-bench" ./cmd/bench
 # A process left over from an earlier run answers the checks instead of the one this
 # script starts, so a run can pass for the wrong reason or fail for one that is not its
 # own.
-for port in 8080 8091 8092 8093 8094 8095 8096 8097 8098 8099 8100 8101 8102; do
+for port in 8080 8091 8092 8093 8094 8095 8096 8097 8098 8099 8100 8101 8102 8103; do
   if (exec 9<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null; then
     printf 'something is already listening on 127.0.0.1:%s. Stop it before running this script.\n' "$port" >&2
     exit 1
@@ -191,6 +200,7 @@ cat > "$WORK/behaviors.json" <<'JSON'
   "e2e-hot-d": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
   "e2e-hot-f": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
   "e2e-hot-g": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
+  "e2e-hot-h": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
   "PLAINROUTE_TEST_SECRET_DO_NOT_LEAK_918273645": { "status": 200, "body": "{\"object\":\"chat.completion\",\"choices\":[]}" },
   "e2e-hot-c": {
     "sequence": [
@@ -906,8 +916,12 @@ sleep 1
 has "the reload that worked is logged" 'config_reloaded' "$(cat "$WORK/gateway.log")"
 has "and counted as the outcome for a reload that worked" 'outcome="ok".* 1' \
   "$(curl -s http://127.0.0.1:8080/metrics | grep 'plainroute_config_reloads_total')"
-has "the reload line names the file it read, and a fingerprint of the content, and never a value it read" \
-  'fingerprint' "$(grep 'config_reloaded' "$WORK/gateway.log")"
+has "the reload line names the file it read and the configuration in force, and never a value it read" \
+  'generation' "$(grep 'config_reload' "$WORK/gateway.log")"
+not_has "and a reload line prints no part of the content hash, which is the whole form" \
+  '\b[0-9a-f]\{64\}\b' "$(grep 'config_reload' "$WORK/gateway.log")"
+not_has "and none prints the short form of it that this log used to print" '\b[0-9a-f]\{10\}\b' \
+  "$(grep 'config_reload' "$WORK/gateway.log")"
 not_has "and the key in the file is not in that line" 'e2e-plain' "$(grep 'config_reloaded' "$WORK/gateway.log")"
 stats
 check "the cooldown survived the reload, because target state is keyed by route and target name" \
@@ -1222,6 +1236,7 @@ cap=200
 interval=1s
 held_cap=1
 caller_key=
+listen=127.0.0.1:8080
 targets='      - name: pair-1
         model: hotpair
         base_url: http://127.0.0.1:8091/pair-a
@@ -1229,7 +1244,7 @@ targets='      - name: pair-1
 
 write_config() { # the targets block for route hotpair
   {
-    printf 'server:\n  listen: 127.0.0.1:8080\n  max_response_bytes: %s\n' "$cap"
+    printf 'server:\n  listen: %s\n  max_response_bytes: %s\n' "$listen" "$cap"
     printf 'config_reload:\n  interval: %s\n' "$interval"
     printf 'routing:\n  strategy: %s\n  cooldown:\n    max: 60s\n' "$strategy"
     printf 'routes:\n  hotpair:\n    targets:\n%s' "$1"
@@ -1272,8 +1287,10 @@ check "a request now goes to the key the changed file names" "200" "$(post_to 80
 stats
 check "and that key is the one that answered" "$((base_new + 1))" "$(count e2e-hot-b)"
 check "and the key the file no longer names is not used again" "$base_old" "$(count "$secret")"
-has "the reload line names the file it read and a fingerprint of the content" 'fingerprint' \
-  "$(grep 'config_reloaded' "$WORK/gateway.log" | tail -1)"
+has "the reload line names the file it read and the configuration in force, and never a value it read" \
+  'generation' "$(grep 'config_reloaded' "$WORK/gateway.log" | tail -1)"
+not_has "and no reload line prints the content hash, in the whole form or the short form the log used to carry" \
+  '\b[0-9a-f]\{64\}\b\|\b[0-9a-f]\{10\}\b' "$(grep 'config_reload' "$WORK/gateway.log")"
 
 # 17.2 a file that decodes but does not validate is refused, and the configuration in force is the last
 # one that was valid. Only the running process can answer which configuration routes.
@@ -1555,6 +1572,97 @@ check "the caller key is rotated by the watcher" "$((baseline + 1))" "$(wait_for
 check "and the key the file no longer names no longer opens the gate" "401" "$(caller e2e-caller-old)"
 check "and the key the file now names does" "200" "$(caller e2e-caller-new)"
 check "and the same process served both" "alive" "$(kill -0 "$GATEWAY_PID" 2>/dev/null && echo alive)"
+
+# 17.8 the boundary between what a running process can act on and what it cannot. The listener this
+# process answers on is the one it built at startup, so a file that asks for a different one cannot be
+# applied by the running process, and that is what the refusal is for.
+#
+# The file here changes two things at once: the listener, which a running process cannot act on, and
+# the key, which a new request would have read. Refusing the file as a whole is the transactional half
+# these checks read: the answer for a request can only come from the configuration that is in force,
+# so an answer on the key the refused file names would mean part of a refused file was applied.
+caller_key=
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "the gate is turned off from the file, so these checks send one request each" \
+  "$((baseline + 1))" "$(wait_for ok "$baseline")"
+
+gen_before=$(grep 'config_reloaded' "$WORK/gateway.log" | tail -1 | gen)
+
+listen=127.0.0.1:8103
+targets='      - name: pair-1
+        model: hotmodel
+        base_url: http://127.0.0.1:8091/pair-g
+        api_key: e2e-hot-h'
+write_config "$targets"
+refused_hash=$(sha_of "$WORK/config.yaml")
+baseline=$(reloadcount restart_required)
+check "a change to a field the process captured at startup is refused as a whole" \
+  "$((baseline + 1))" "$(wait_for restart_required "$baseline")"
+
+refusal=$(grep 'restart_required_field_changed' "$WORK/gateway.log" | tail -1)
+has "the refusal names the field it refused" 'server.listen' "$refusal"
+has "and says that a running process cannot act on it" 'restart_required_field_changed' "$refusal"
+not_has "and prints the address the file asked for, which is the value it refused" '8103' "$refusal"
+not_has "and prints a value from the file" 'e2e-hot-h' "$refusal"
+
+# A check that compares two reads from the log passes on two empties, so the presence of the field has
+# to be answered by itself: without these two, a build that stopped naming the generation would pass the
+# check below on an empty compared with an empty.
+check "the generation the process reports is a number it counted, and not an empty field" "yes" \
+  "$([ -n "$gen_before" ] && echo yes)"
+check "and the refusal line names one" "yes" "$([ -n "$(printf '%s' "$refusal" | gen)" ] && echo yes)"
+
+# A refusal does not make a generation: the number in the refusal line is the number of the
+# configuration that is still in force.
+check "and the refusal names the same generation as the last file that was applied" \
+  "$gen_before" "$(printf '%s' "$refusal" | gen)"
+
+check "and the process still answers on the listener it was built with" "ok" \
+  "$(curl -s http://127.0.0.1:8080/healthz)"
+check "and nothing listens on the address the refused file asked for" "" \
+  "$(curl -s --max-time 3 http://127.0.0.1:8103/healthz)"
+
+stats
+base_g=$(count e2e-hot-g)
+check "a request is still served, by the key the last applied file named" "200" \
+  "$(post_to 8080 hotpair "$WORK/in-force.txt")"
+stats
+check "and that request went to it, so nothing from the refused file was applied" \
+  "$((base_g + 1))" "$(count e2e-hot-g)"
+check "and the key only the refused file names was never used" "0" "$(count e2e-hot-h)"
+
+# One refusal per content, not one per second, which is the same dedup the bad file is checked for:
+# the hash is what the watcher keeps for itself, and the check is that the process did not print it.
+before_refused=$(reloadcount restart_required)
+before_lines=$(grep -c 'restart_required_field_changed' "$WORK/gateway.log")
+sleep 4
+check "the same refused content is not counted again over three more looks" \
+  "$before_refused" "$(reloadcount restart_required)"
+check "and it is not logged again" "$before_lines" \
+  "$(grep -c 'restart_required_field_changed' "$WORK/gateway.log")"
+not_has "and no reload line prints the content hash, in the whole form or the short form" \
+  "$refused_hash\|${refused_hash:0:10}" \
+  "$(grep 'config_reload' "$WORK/gateway.log"; curl -s http://127.0.0.1:8080/metrics; cat "$WORK/in-force.txt")"
+
+# The file comes back to what this process was built with, plus a key a new request can read. That is
+# applied: refusing a change did not freeze the watcher, and the generation moved only for the content
+# that was acted on.
+listen=127.0.0.1:8080
+write_config "$targets"
+baseline=$(reloadcount ok)
+check "a file that only changes a field the process can act on is applied" \
+  "$((baseline + 1))" "$(wait_for ok "$baseline")"
+stats
+base_h=$(count e2e-hot-h)
+check "and the new key is the one that answers" "200" "$(post_to 8080 hotpair "$WORK/applied.txt")"
+stats
+check "and that request went to it" "$((base_h + 1))" "$(count e2e-hot-h)"
+check "and the generation is one more than the last applied one, because the refusal made none" \
+  "$((gen_before + 1))" "$(grep 'config_reloaded' "$WORK/gateway.log" | tail -1 | gen)"
+check "and it is still the same process, so this was not a restart" "1" \
+  "$(grep -c '"msg":"listening"' "$WORK/gateway.log")"
+
 printf '\n%d checks: %s\n' "$CHECKS" "$([ "$FAIL" = 0 ] && echo 'all passed' || echo 'failures')"
 exit "$FAIL"
 
