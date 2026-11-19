@@ -112,7 +112,10 @@ func New() *Metrics {
 		}, []string{"route", "code"}),
 		Reloads: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_config_reloads_total",
-			Help: "Configuration reloads that acted on changed content, by outcome: one count per distinct content, so a file that stays bad is counted once and a signal that changes nothing is not a reload.",
+			Help: "Configuration reloads that acted on changed content, by outcome: ok, failed, restart_required. " +
+				"One count per distinct content, so a file that stays bad is counted once and a signal that " +
+				"changes nothing is not a reload. The outcome is the only label, and no value read from the " +
+				"file is part of it.",
 		}, []string{"outcome"}),
 		InFlight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "plainroute_in_flight_requests",

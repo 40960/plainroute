@@ -4,6 +4,8 @@ package reload
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -99,6 +101,9 @@ func (d *drive) ok() float64 { return testutil.ToFloat64(d.metrics.Reloads.WithL
 func (d *drive) failed() float64 {
 	return testutil.ToFloat64(d.metrics.Reloads.WithLabelValues("failed"))
 }
+func (d *drive) restartRequired() float64 {
+	return testutil.ToFloat64(d.metrics.Reloads.WithLabelValues("restart_required"))
+}
 
 func TestChangedContentIsReloadedAndTheSameContentIsNot(t *testing.T) {
 	d := newDrive(t)
@@ -150,7 +155,7 @@ func TestTheContentStartupLoadedIsNotCountedAsAReload(t *testing.T) {
 		t.Fatalf("startup load: %v", err)
 	}
 	d.committed = append(d.committed, cfg)
-	d.w.Seed([]byte(good))
+	d.w.Seed([]byte(good), cfg)
 
 	if d.w.Tick() {
 		t.Fatal("the startup content must not be acted on again")
@@ -384,12 +389,15 @@ func signal(ch chan struct{}) bool {
 	}
 }
 
-// The log carries a fingerprint and the path, and never a value read from the file, because the
-// file is a secret. This is the same rule as the parse error, on the path a log line takes.
-func TestTheReloadLogNamesTheFileAndTheFingerprintAndNotAValueItRead(t *testing.T) {
+// The log carries the path and the runtime generation, and never a value read from the file,
+// because the file is a secret. This is the same rule as the parse error, on the path a log line
+// takes. The hash is what the watcher uses to tell one content from another, and no part of it is
+// printed: a hash of a secret file is still something a reader can compare against a file.
+func TestTheReloadLogNamesTheFileAndTheGenerationAndNotAValueOrTheHash(t *testing.T) {
 	d := newDrive(t)
 	secret := "PLAINROUTE_TEST_SECRET_DO_NOT_LEAK_918273645"
-	d.write(strings.Replace(good, "key-one", secret, 1))
+	content := strings.Replace(good, "key-one", secret, 1)
+	d.write(content)
 	d.w.Tick()
 
 	if strings.Contains(d.out(), secret) {
@@ -399,9 +407,215 @@ func TestTheReloadLogNamesTheFileAndTheFingerprintAndNotAValueItRead(t *testing.
 		t.Errorf("the log must name the file: %s", d.out())
 	}
 
+	// Both forms the fingerprint used to take: the whole hash and the ten characters of it. A check
+	// that only looked for the short form would pass on a build that printed the whole one.
+	sum := sha256.Sum256([]byte(content))
+	full := hex.EncodeToString(sum[:])
+	if strings.Contains(d.out(), full) {
+		t.Errorf("the log printed the content hash: %s", d.out())
+	}
+	if strings.Contains(d.out(), full[:10]) {
+		t.Errorf("the log printed part of the content hash: %s", d.out())
+	}
+	if !strings.Contains(d.out(), `"generation":1`) {
+		t.Errorf("the log must name the configuration in force: %s", d.out())
+	}
+
 	d.write(bad)
 	d.w.Tick()
 	if strings.Contains(d.out(), secret) {
 		t.Errorf("a key from the file in force appeared in the failure line: %s", d.out())
+	}
+	if strings.Contains(d.out(), full) || strings.Contains(d.out(), full[:10]) {
+		t.Errorf("a failure line printed part of the content hash: %s", d.out())
+	}
+}
+
+// The number the log carries is the count of contents this process acted on, and it is the check
+// that the number is not a value derived from the file: the two contents below are written in an
+// order that the hashes put the other way round, so a generation that came from the content would
+// not come out as 2 and then 3. Re-reading content that was already acted on does not move it.
+func TestTheGenerationIsTheCountOfContentsActedOnAndNotAValueFromTheFile(t *testing.T) {
+	d := newDrive(t)
+
+	// The hash of this content starts with a hex digit greater than the hash of the content written
+	// second, which is what makes the order below the order the process acted on them and not an order
+	// the content itself would give. Running this test shows the two hashes, so the claim is measured
+	// and not taken on faith.
+	first := strings.Replace(good, "key-one", "key-a", 1)
+	second := strings.Replace(good, "key-one", "key-b", 1)
+	sumFirst := sha256.Sum256([]byte(first))
+	sumSecond := sha256.Sum256([]byte(second))
+	hashFirst := hex.EncodeToString(sumFirst[:])
+	hashSecond := hex.EncodeToString(sumSecond[:])
+	if hashFirst <= hashSecond {
+		t.Fatalf("the fixtures no longer order the way this check needs, so it cannot answer: %s vs %s",
+			hashFirst, hashSecond)
+	}
+
+	d.write(first)
+	d.w.Tick()
+	if d.w.Generation() != 1 {
+		t.Fatalf("generation after the first content: got %d, want 1", d.w.Generation())
+	}
+
+	d.write(second)
+	if !d.w.Tick() {
+		t.Fatal("the second content is a change")
+	}
+	if d.w.Generation() != 2 {
+		t.Errorf("generation after the content with the smaller hash: got %d, want 2", d.w.Generation())
+	}
+
+	// The same content again: nothing to act on, so the number does not move.
+	if d.w.Tick() {
+		t.Fatal("the same content was acted on twice")
+	}
+	if d.w.Generation() != 2 {
+		t.Errorf("reading content that was already acted on moved the generation: got %d", d.w.Generation())
+	}
+
+	// A refusal does not make a new generation: the configuration in force is still the one the
+	// process was built with, and the number names that one.
+	d.write(bad)
+	if !d.w.Tick() {
+		t.Fatal("a bad file is acted on, even to refuse it")
+	}
+	if d.w.Generation() != 2 {
+		t.Errorf("a refused file made a new generation: got %d, want 2", d.w.Generation())
+	}
+}
+
+// The transactional half: a file that changes a field the running process cannot act on is refused
+// as a whole, including the fields in the same file that the process could have acted on. Nothing is
+// partly applied, the configuration in force is the last one that was acted on, the process is not
+// stopped, and the next look tries again.
+//
+// The comparison is against the configuration in force and not against the file the last look read,
+// which is what the last part of this test checks: a content that keeps a refused value and changes
+// only a hot field is still refused. A watcher that compared against the file it had just read would
+// see no change to the listener here and apply the key.
+func TestAChangeToAProcessLevelFieldIsRefusedAsAWholeAndSurvivesAsTheLastKnownGood(t *testing.T) {
+	d := newDrive(t)
+	secret := "PLAINROUTE_TEST_SECRET_DO_NOT_LEAK_918273645"
+
+	d.write(strings.Replace(good, "key-one", secret, 1))
+	d.w.Tick()
+	inForce := d.committed[0]
+
+	// A listener the process already built, together with a key a new request would have read.
+	refused := strings.Replace(good, "key-one", "key-two", 1) + "server:\n  listen: 127.0.0.1:9999\n"
+	d.write(refused)
+	if !d.w.Tick() {
+		t.Fatal("a changed file must be acted on, even to refuse it")
+	}
+	if len(d.committed) != 1 {
+		t.Fatalf("a refused file was applied: got %d commits, want 1", len(d.committed))
+	}
+	if d.committed[0] != inForce {
+		t.Error("the configuration in force changed because of a refused file")
+	}
+	if got := d.restartRequired(); got != 1 {
+		t.Errorf("refusals counted: got %v, want 1", got)
+	}
+
+	line := d.out()
+	if !strings.Contains(line, "restart_required_field_changed") {
+		t.Errorf("the refusal does not say why: %s", line)
+	}
+	if !strings.Contains(line, "server.listen") {
+		t.Errorf("the refusal does not name the field it refused: %s", line)
+	}
+
+	// Names, not values: the address the file asked for and the key the file holds.
+	if strings.Contains(line, "9999") {
+		t.Errorf("the refusal printed the value it refused: %s", line)
+	}
+	if strings.Contains(line, "key-two") {
+		t.Errorf("the refusal printed a key: %s", line)
+	}
+	if d.w.Generation() != 1 {
+		t.Errorf("the generation in force moved because of a refused file: got %d", d.w.Generation())
+	}
+
+	// One refusal per content, not one per second.
+	for i := 0; i < 12; i++ {
+		if d.w.Tick() {
+			t.Errorf("look %d reported the same refused content again", i+1)
+		}
+	}
+	if got := d.restartRequired(); got != 1 {
+		t.Errorf("refusals counted after 13 looks: got %v, want 1", got)
+	}
+
+	// The refused value is still in the file, and this content changes only a hot field. It is still
+	// refused, because the process cannot act on the listener it was built with.
+	d.write(strings.Replace(refused, "key-two", "key-three", 1))
+	if !d.w.Tick() {
+		t.Fatal("new content is a change, even when it is refused")
+	}
+	if len(d.committed) != 1 {
+		t.Fatalf("a file that still asked for a new listener was applied: got %d commits", len(d.committed))
+	}
+	if got := d.restartRequired(); got != 2 {
+		t.Errorf("refusals counted: got %v, want 2, because the comparison is against the file in force", got)
+	}
+
+	// The file comes back to what the process was built with, plus a key a new request can read.
+	// That is applied: the refusal did not freeze the watcher.
+	d.write(strings.Replace(good, "key-one", "key-four", 1))
+	if !d.w.Tick() {
+		t.Fatal("a file that only changes a field the process can act on must be applied")
+	}
+	if len(d.committed) != 2 {
+		t.Fatalf("commits: got %d, want 2", len(d.committed))
+	}
+	if committed := d.committed[1]; committed.Routes["demo"].Targets[0].APIKey != "key-four" {
+		t.Errorf("the configuration swapped in is not the one the file says: %q",
+			committed.Routes["demo"].Targets[0].APIKey)
+	}
+	if got := d.restartRequired(); got != 2 {
+		t.Errorf("the applied reload was counted as a refusal: got %v, want 2 refusals", got)
+	}
+	if got := d.ok(); got != 2 {
+		t.Errorf("reloads counted as ok: got %v, want 2 (the first look and this one)", got)
+	}
+	if d.w.Generation() != 2 {
+		t.Errorf("generation after the applied reload: got %d, want 2", d.w.Generation())
+	}
+}
+
+// The two sides of the boundary, read from the code and not from a document: a request-level field
+// is what a new request can see, and a process-level field is what it cannot. The test writes both
+// in one file and reads back which one the running process acted on, so a table that claims a field
+// is hot while the code reads it only at startup cannot pass here.
+func TestAProcessLevelFieldAndARequestLevelFieldInOneFileAnswerFromTheCode(t *testing.T) {
+	d := newDrive(t)
+
+	d.write(good)
+	d.w.Tick()
+
+	// One file, two kinds of change: the logger was built at startup, and the request cap is read on
+	// every request.
+	mixed := strings.Replace(good, "key-one", "key-two", 1) + "logging:\n  level: debug\n"
+	d.write(mixed)
+	if !d.w.Tick() {
+		t.Fatal("the mixed file must be acted on, even to refuse it")
+	}
+	if got := d.restartRequired(); got != 1 {
+		t.Fatalf("refusals counted: got %v, want 1", got)
+	}
+
+	// The refusal names the field that a running process cannot act on, and not the key, which a new
+	// request would have read from the generation in force.
+	line := d.out()
+	if !strings.Contains(line, "logging.level") {
+		t.Errorf("the refusal does not name the field it refused: %s", line)
+	}
+	if strings.Contains(line, "key-two") {
+		t.Errorf("the refusal printed a value from the file: %s", line)
+	}
+	if len(d.committed) != 1 {
+		t.Fatalf("part of a refused file was applied: got %d commits", len(d.committed))
 	}
 }

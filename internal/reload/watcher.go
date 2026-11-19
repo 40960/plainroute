@@ -15,6 +15,17 @@
 // the process does not exit, and the next look at the file tries again. Startup is the one place
 // where a bad file is fatal, because before the first configuration there is nothing good to keep,
 // and that is why this package never waits for a file to appear.
+//
+// A file that changes a field the process captured at startup is refused as a whole, even when the
+// rest of it is valid, because that part of the change cannot be honoured without starting the
+// process again. Refusing the whole file is what keeps the file a reader reads and the process that
+// is running from disagreeing about a field.
+//
+// The hash is internal: it is what tells two contents apart so one content is acted on once. No part
+// of it is printed, because the content is a secret file. What a log line carries instead is the
+// runtime generation, a counter that starts at 1 for the configuration the process started with and
+// goes up by one for each content the process acted on. It says which configuration is in force
+// without being derived from what the file holds.
 package reload
 
 import (
@@ -23,6 +34,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/40960/plainroute/internal/config"
@@ -55,8 +67,15 @@ type Watcher struct {
 	// while a look is pending is the same look.
 	Force chan struct{}
 
-	seen string // the state last acted on
-	good string // the hash of the content that is in force
+	seen string // the state last acted on, which is what makes one content one report
+	// inForce is the configuration that is in force, kept so a change to a process-level field can be
+	// compared with what the process was built with. Without it there is nothing to compare against,
+	// and a refused change would quietly become part of the running configuration.
+	inForce *config.Config
+	// generation is the number of the configuration in force: 1 for the one the process started with,
+	// and one more for each content acted on. It is a runtime counter, so it is not a value derived
+	// from the file, and it is what a log line can carry safely.
+	generation int
 }
 
 // New builds a watcher. Interval comes from the config, so the floor that config validation enforces
@@ -75,15 +94,20 @@ func New(path string, interval time.Duration, log *slog.Logger, m *metrics.Metri
 	}
 }
 
-// Seed records the content the process started with, so the first look at the file is not a reload:
-// nothing changed, and a process that counted its own startup as a reload would report a change that
-// no one made. Startup read the file through the strict path, so this is the same content that was
-// validated, and the hash recorded here is the hash of the file the process is running on.
-func (w *Watcher) Seed(data []byte) {
+// Seed records the content the process started with, and the configuration built from it, so the
+// first look at the file is not a reload: nothing changed, and a process that counted its own
+// startup as a reload would report a change that no one made. Startup read the file through the
+// strict path, so this is the same content that was validated, and the configuration recorded here
+// is the one the process was built with: the listener, the server object and the logger were all
+// made from it, which is why a later change to a field taken from it is refused rather than applied.
+//
+// The number recorded here is 1, because this is the first configuration.
+func (w *Watcher) Seed(data []byte, cfg *config.Config) {
 	sum := sha256.Sum256(data)
 	state := hex.EncodeToString(sum[:])
 	w.seen = state
-	w.good = state
+	w.inForce = cfg
+	w.generation = 1
 }
 
 // Tick looks at the file once and reports whether it acted on a state it had not acted on before. A
@@ -98,10 +122,12 @@ func (w *Watcher) Tick() bool {
 		w.Metrics.Reloads.WithLabelValues("failed").Inc()
 		// The path and the error, and never what the file contains: the error is the reason an
 		// operator can read this line, and the file is a secret.
-		w.Log.Warn("config_read_failed", "path", w.Path, "error", err)
+		w.Log.Warn("config_read_failed", "path", w.Path, "generation", w.generation, "error", err)
 		return true
 	}
 
+	// The hash is the change detector, and it stays inside this function: it is what makes one
+	// content one report instead of a report every second.
 	sum := sha256.Sum256(data)
 	state := hex.EncodeToString(sum[:])
 	if state == w.seen {
@@ -112,14 +138,27 @@ func (w *Watcher) Tick() bool {
 	cfg, err := config.Parse(data)
 	if err != nil {
 		w.Metrics.Reloads.WithLabelValues("failed").Inc()
-		w.Log.Warn("config_reload_failed", "path", w.Path, "fingerprint", short(state), "error", err)
+		w.Log.Warn("config_reload_failed", "path", w.Path, "generation", w.generation, "error", err)
+		return true
+	}
+
+	// Parsing and validating is not the whole decision. A change to a field the process captured at
+	// startup is valid as a value and cannot be acted on by a running process, so the whole file is
+	// refused instead of half-applied: the configuration in force stays the last one that was acted
+	// on. Names, never values, because a field name is what a reader can act on and a value in this
+	// file is a secret.
+	if changed := config.RestartRequiredChanges(w.inForce, cfg); len(changed) > 0 {
+		w.Metrics.Reloads.WithLabelValues("restart_required").Inc()
+		w.Log.Warn("config_reload_failed", "path", w.Path, "generation", w.generation,
+			"reason", "restart_required_field_changed", "fields", strings.Join(changed, ","))
 		return true
 	}
 
 	w.Commit(cfg)
-	w.good = state
+	w.inForce = cfg
+	w.generation++
 	w.Metrics.Reloads.WithLabelValues("ok").Inc()
-	w.Log.Info("config_reloaded", "path", w.Path, "fingerprint", short(state), "routes", len(cfg.Routes))
+	w.Log.Info("config_reloaded", "path", w.Path, "generation", w.generation, "routes", len(cfg.Routes))
 
 	if next := cfg.Reload.Interval.Std(); next > 0 && next != w.Interval {
 		// The interval is in the file, so a change to it applies from the next look. This is the only
@@ -151,15 +190,7 @@ func (w *Watcher) Run(ctx context.Context) {
 	}
 }
 
-// InForce is the fingerprint of the content that is in force, reported so a reader can tell the
-// configuration a request used from the configuration the file asked for.
-func (w *Watcher) InForce() string { return short(w.good) }
-
-// short is the fingerprint the log carries: the first five bytes of the hash. A hash does not reveal
-// a key, and this is only the shortest form of it, enough to tell two contents apart in a log line.
-func short(state string) string {
-	if state == stateUnreadable || len(state) <= 10 {
-		return state
-	}
-	return state[:10]
-}
+// Generation is the number of the configuration in force. It is reported so a reader can tell which
+// configuration a request used without any part of the file's content coming back out: the number is
+// a count of the contents this process acted on, and it does not depend on what they hold.
+func (w *Watcher) Generation() int { return w.generation }

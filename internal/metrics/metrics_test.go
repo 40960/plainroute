@@ -44,3 +44,29 @@ plainroute_upstream_errors_total{kind="transport",route="none",target="none"} 1
 		t.Errorf("upstream_errors: %v", err)
 	}
 }
+
+// The help text has to name the outcomes the reload path can actually put on the label: a page that
+// names fewer outcomes than the code produces is a page a reader misreads. Only the collected text
+// names the help line and the label, so this reads both. Each of the three outcomes is produced by
+// the reload path and proven in internal/reload: a reload that applied, a content it could not read
+// or validate, and a valid file that changed a field the running process cannot act on.
+//
+// The outcome is the only label, which is what keeps the cardinality low: a field name, a value from
+// the file or a hash has no place in it.
+func TestTheReloadHelpTextNamesTheOutcomesTheCodeProduces(t *testing.T) {
+	m := New()
+
+	m.Reloads.WithLabelValues("restart_required").Inc()
+	if err := testutil.CollectAndCompare(m.Reloads, strings.NewReader(`# HELP plainroute_config_reloads_total Configuration reloads that acted on changed content, by outcome: ok, failed, restart_required. One count per distinct content, so a file that stays bad is counted once and a signal that changes nothing is not a reload. The outcome is the only label, and no value read from the file is part of it.
+# TYPE plainroute_config_reloads_total counter
+plainroute_config_reloads_total{outcome="restart_required"} 1
+`), "plainroute_config_reloads_total"); err != nil {
+		t.Errorf("reloads: %v", err)
+	}
+
+	// A help text that named an outcome the code never produces would still pass a test that only
+	// looked for the string. This is the half that reads the code: the label the reload path writes.
+	if got := testutil.ToFloat64(m.Reloads.WithLabelValues("restart_required")); got != 1 {
+		t.Errorf("the outcome label: got %v, want 1", got)
+	}
+}

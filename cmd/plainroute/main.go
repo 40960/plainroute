@@ -59,7 +59,7 @@ func main() {
 	handler := proxy.New(cfg, m, log, routing.NewStateStore(), time.Now)
 
 	watcher := reload.New(*cfgPath, cfg.Reload.Interval.Std(), log, m, handler.Reload)
-	watcher.Seed(data)
+	watcher.Seed(data, cfg)
 
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,
@@ -102,6 +102,10 @@ func main() {
 		"gate", gate,
 		"config", *cfgPath,
 		"reload_interval", cfg.Reload.Interval.String(),
+		// The number of the configuration this process was built with. It is the first one, so the
+		// startup line and the reload lines report the same kind of fact, and no part of the file's
+		// content is in either.
+		"generation", watcher.Generation(),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -138,6 +142,11 @@ func main() {
 		case <-ctx.Done():
 			// Drain: stop taking new requests, then let the requests already
 			// streaming finish within the grace period.
+			//
+			// The grace period read here is the value this process was built with, not the value the
+			// file says now: `cfg` is the startup snapshot, and the handler's generations are for a
+			// request that is already running. That is why server.shutdown_grace is a restart-required
+			// field rather than a reloadable one, and the docs say the same.
 			handler.Drain()
 			deadline := time.Now().Add(cfg.Server.ShutdownGrace.Std())
 			if err := srv.Shutdown(context.Background()); err != nil {
