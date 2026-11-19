@@ -1392,14 +1392,18 @@ check "and the key the removed target had is not used again" "$before" "$(count 
 # the next one, so the change is applied while the request is in the middle of it. What the request still
 # has to decide afterwards is how much of the body it may read, and that is where a handler that read the
 # configuration twice shows up.
+# The baseline has to be read before the request is sent. Read after it, the number can already
+# include the request being checked, and the check compares the count against itself plus one: it
+# fails on a machine fast enough to record the request before the first read, and passes on one
+# slow enough not to. A baseline that can include the thing it is measuring is not a baseline.
+stats
+base_held=$(count e2e-hot-c)
 touch "$WORK/held.txt"
 curl -s -N --max-time 20 -o "$WORK/held.txt" -H 'Content-Type: application/json' \
   -d '{"model":"hotstream","stream":true,"messages":[{"role":"user","content":"prompt-zq"}]}' \
   http://127.0.0.1:8080/v1/chat/completions > /dev/null &
 held=$!
 
-stats
-base_held=$(count e2e-hot-c)
 end=$((SECONDS + 6))
 while [ "$(count e2e-hot-c)" = "$base_held" ] && [ "$SECONDS" -lt "$end" ]; do
   sleep 0.2
