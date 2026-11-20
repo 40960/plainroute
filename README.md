@@ -1047,7 +1047,7 @@ cosign verify \
   --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@<ref>' \
   --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
   'ghcr.io/40960/plainroute@<digest>'
-cosign verify-attestation --type sbom \
+cosign verify-attestation --type https://spdx.dev/Document \
   --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@<ref>' \
   --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
   'ghcr.io/40960/plainroute@<digest>'

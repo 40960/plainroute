@@ -224,7 +224,7 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   environment a runner would give rather than on a runner: breaking a release workflow
   to prove a check can fail would put an artifact in a registry, which is not what a
   falsification should cost.
-- Three real runs of `release.yml` each showed a reading that was an assumption rather
+- Four real runs of `release.yml` each showed a reading that was an assumption rather
   than a reading of the tool. The first asked buildx for `.Digest` and `.Platform`; its
   template has neither, so the image reached the registry unsigned. The second printed
   the JSON: `platform` is an object with `os` and `architecture`, not a string, and the
@@ -239,10 +239,13 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   images: `verify` prints a `critical` object and `verify-attestation` prints an in-toto
   DSSE envelope with a base64 payload. Both steps had read fields neither output has, so
   the run would have failed there too. They now check the digest, the signature type,
-  the payload type and that the attestation carries the exact SBOM the build wrote.
-  Fixtures are the printed answers, not inventions, and each reading was shown to fail
-  once against a deliberate break, in a shell with a stand for the tool: breaking a
-  release workflow on a runner would leave another artifact in the registry.
+  the payload type and that the attestation carries the exact SBOM the build wrote. The
+  fourth run signed both names and then refused the `--type sbom` alias: v2.6.5 calls
+  that predicate `spdx` or `https://spdx.dev/Document`. The writer, the reader and the
+  commands a reader is told to run now use the URI. Fixtures are printed answers, not
+  inventions, and each reading was shown to fail once against a deliberate break, in a
+  shell with a stand for the tool: breaking a release workflow on a runner would leave
+  another artifact in the registry.
 
 - `scripts/smoke-openai-compatible.sh` checks a live OpenAI-compatible endpoint the way
   a client sees it: the model list, a non-stream answer, a streamed answer, a tool call,

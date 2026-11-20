@@ -221,8 +221,12 @@ jobs:
           # the only immutable name — can verify the same document.
           cosign sign --yes "$image:$tag"
           cosign sign --yes "$image@${{ steps.digest.outputs.digest }}"
-          cosign attest --yes --type sbom --predicate sbom.spdx.json "$image:$tag"
-          cosign attest --yes --type sbom --predicate sbom.spdx.json \
+          # cosign v2.6.5 refused the `--type sbom` alias on the runner: its help lists `spdx`, not
+          # `sbom`. The URI is accepted by the version installed here and is what
+          # `verify-attestation` asks for below, so the writer and the reader name the same
+          # predicate type rather than two aliases.
+          cosign attest --yes --type https://spdx.dev/Document --predicate sbom.spdx.json "$image:$tag"
+          cosign attest --yes --type https://spdx.dev/Document --predicate sbom.spdx.json \
             "$image@${{ steps.digest.outputs.digest }}"
 
       - name: the signature verifies against this run
@@ -271,7 +275,7 @@ jobs:
             echo 'cosign is not on this runner' >&2
             exit 1
           fi
-          out=$(cosign verify-attestation --type sbom \
+          out=$(cosign verify-attestation --type https://spdx.dev/Document \
             --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${{ steps.names.outputs.ref }}" \
             --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
             '${{ steps.names.outputs.image }}@${{ steps.digest.outputs.digest }}')
@@ -362,7 +366,7 @@ jobs:
               --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
               '${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}'
 
-            cosign verify-attestation --type sbom \
+            cosign verify-attestation --type https://spdx.dev/Document \
               --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@${{ needs.build.outputs.ref }}' \
               --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
               '${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}'
