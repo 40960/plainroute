@@ -572,10 +572,11 @@ auth:
   the window was answered 200 by that same key, so the clamp is when the claim gets
   checked again. With the default the same claim governs for 15 minutes instead of the 2
   hours the upstream asked for.
-- When every target behind a route name is cooling, the gateway does not contact an
-  upstream. It answers 429 with the OpenAI error shape and
-  `code: all_targets_cooling_down`, and `Retry-After` is the recovery time of the target
-  that recovers first.
+- When no target behind a route name can be picked, the gateway does not contact an
+  upstream. It answers 429 with the OpenAI error shape. If every target is cooling the
+  code is `all_targets_cooling_down` and `Retry-After` is the soonest real recovery
+  across the fallback chain. If a target is out only because it is at `max_active`, the
+  code is `all_targets_busy` and no `Retry-After` is invented for it.
 - The `Retry-After` the gateway sends is the window it actually applied, not whatever the
   upstream printed.
 - The gateway does not follow redirects. Upstream URLs come from config only, so a
