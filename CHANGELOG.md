@@ -224,7 +224,7 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   environment a runner would give rather than on a runner: breaking a release workflow
   to prove a check can fail would put an artifact in a registry, which is not what a
   falsification should cost.
-- Four real runs of `release.yml` each showed a reading that was an assumption rather
+- Five real runs of `release.yml` each showed a reading that was an assumption rather
   than a reading of the tool. The first asked buildx for `.Digest` and `.Platform`; its
   template has neither, so the image reached the registry unsigned. The second printed
   the JSON: `platform` is an object with `os` and `architecture`, not a string, and the
@@ -242,10 +242,15 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   the payload type and that the attestation carries the exact SBOM the build wrote. The
   fourth run signed both names and then refused the `--type sbom` alias: v2.6.5 calls
   that predicate `spdx` or `https://spdx.dev/Document`. The writer, the reader and the
-  commands a reader is told to run now use the URI. Fixtures are printed answers, not
-  inventions, and each reading was shown to fail once against a deliberate break, in a
-  shell with a stand for the tool: breaking a release workflow on a runner would leave
-  another artifact in the registry.
+  commands a reader is told to run now use the URI. The fifth run signed and attested
+  both names, then failed on the verify flag: v2.6.5 has no
+  `--certificate-issuer-regexp`, and the value named a repository rather than the
+  issuer. A public image signed by a GitHub Actions run verified locally against
+  `https://token.actions.githubusercontent.com`, so both verify steps and the commands
+  printed for a reader now use that issuer with the flag v2.6.5 accepts. Fixtures are
+  printed answers, not inventions, and each reading was shown to fail once against a
+  deliberate break, in a shell with a stand for the tool: breaking a release workflow on
+  a runner would leave another artifact in the registry.
 
 - `scripts/smoke-openai-compatible.sh` checks a live OpenAI-compatible endpoint the way
   a client sees it: the model list, a non-stream answer, a streamed answer, a tool call,

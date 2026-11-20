@@ -239,14 +239,18 @@ jobs:
           # those are two different things: the image carries the name a person gave it, while the
           # certificate names the branch the run started from. Checking the name here would be a
           # check that could only pass for a build triggered by a tag, and would say nothing about
-          # this run.
+          # this run. The issuer regexp names the GitHub OIDC service, not a repository path. A
+          # public image signed by a GitHub Actions run verified with this exact issuer on cosign
+          # v2.6.5, whose flag is `--certificate-oidc-issuer-regexp` rather than the shorter
+          # spelling used before; the fifth run said the short flag does not exist. The attestation
+          # step uses the same two checks.
           if ! command -v cosign > /dev/null; then
             echo 'cosign is not on this runner' >&2
             exit 1
           fi
           out=$(cosign verify \
             --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${{ steps.names.outputs.ref }}" \
-            --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
+            --certificate-oidc-issuer-regexp 'https://token.actions.githubusercontent.com' \
             '${{ steps.names.outputs.image }}@${{ steps.digest.outputs.digest }}')
           echo "$out"
           printf '%s' "$out" > signature.json
@@ -277,7 +281,7 @@ jobs:
           fi
           out=$(cosign verify-attestation --type https://spdx.dev/Document \
             --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${{ steps.names.outputs.ref }}" \
-            --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
+            --certificate-oidc-issuer-regexp 'https://token.actions.githubusercontent.com' \
             '${{ steps.names.outputs.image }}@${{ steps.digest.outputs.digest }}')
           echo "$out"
           # The payload has to be the document the build job wrote, not a signature that verifies
@@ -363,12 +367,12 @@ jobs:
             ```bash
             cosign verify \
               --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@${{ needs.build.outputs.ref }}' \
-              --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
+              --certificate-oidc-issuer-regexp 'https://token.actions.githubusercontent.com' \
               '${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}'
 
             cosign verify-attestation --type https://spdx.dev/Document \
               --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@${{ needs.build.outputs.ref }}' \
-              --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
+              --certificate-oidc-issuer-regexp 'https://token.actions.githubusercontent.com' \
               '${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}'
             ```
 
