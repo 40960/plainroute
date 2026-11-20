@@ -3,30 +3,31 @@ name: release
 
 # What this does: builds the image for linux/amd64 and linux/arm64, pushes it to GHCR, writes an
 # SPDX SBOM, signs the image with cosign in keyless mode against this run's identity, and publishes
-# a GitHub Release that names the version, the commit, the immutable digest, whether the release is a
-# pre-release, and the commands a reader runs to verify what they pulled.
+# a GitHub Release that names the version, the commit, the immutable digest, whether the release is
+# a pre-release, and the commands a reader runs to verify what they pulled.
 #
 # There is no signing key in this repository. Keyless signing binds the signature to the identity of
 # the workflow run that made it, so a build made anywhere else gives a different signature, and that
 # is what a reader is checking when they verify an image.
 #
 # A workflow file cannot check itself: a file that fails to parse produces a run with no jobs and no
-# logs, so no step inside it can report the parse failure. That is why this file is read by hand, and
-# why every claim below is checked by a step inside the job instead of assumed by it.
+# logs, so no step inside it can report the parse failure. That is why this file is read by hand,
+# and why every claim below is checked by a step inside the job instead of assumed by it.
 #
-# What this job cannot check is said as a measurement: the image size, the container settings and the
-# health check answering /healthz need a docker daemon on a machine, and the verification commands
-# below are the ones that take those numbers. Nothing here contacts a provider.
+# What this job cannot check is said as a measurement: the image size, the container settings and
+# the health check answering /healthz need a docker daemon on a machine, and the verification
+# commands below are the ones that take those numbers. Nothing here contacts a provider.
 #
 # Tags that trigger this are v0.0.0 shaped, and the glob also matches a pre-release name such as
-# v0.2.0-rc1, so a name that exists as a tag is published by a tag push. A manual run is the path for a
-# name that is not pushed as a tag: it has no tag to read, so the name it publishes under is the input it
-# was given, and that input has to be declared. Before this file declared it, the name could not be given
-# at all, and the step that reads it could only fail.
+# v0.2.0-rc1, so a name that exists as a tag is published by a tag push. A manual run is the path
+# for a name that is not pushed as a tag: it has no tag to read, so the name it publishes under is
+# the input it was given, and that input has to be declared. Before this file declared it, the name
+# could not be given at all, and the step that reads it could only fail.
 #
 # The identity keyless signing binds to is the ref the run started from: refs/tags/<name> for a run
-# triggered by a tag, refs/heads/<branch> for a run a person started. That is not the same thing as the
-# name the image is published under, so the identity is read from the run, and the release prints it.
+# triggered by a tag, refs/heads/<branch> for a run a person started. That is not the same thing as
+# the name the image is published under, so the identity is read from the run, and the release
+# prints it.
 
 on:
   push:
@@ -62,17 +63,18 @@ jobs:
       - name: names
         id: names
         env:
-          # The input arrives as data rather than as text inside the command, so a name is not a shell
-          # string. What the step checks is what actually arrived, not what the form was asked for.
+          # The input arrives as data rather than as text inside the command, so a name is not a
+          # shell string. What the step checks is what actually arrived, not what the form was asked
+          # for.
           INPUT_TAG: ${{ inputs.tag }}
         run: |
           # GHCR rejects an uppercase owner or image name, and the failure only appears at push
           # time, so the name is normalised here rather than carried from the repository name.
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/plainroute"
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            # A manual run has no tag, so the name is the input it was given. What is checked here is what
-            # actually arrived, not whether a required field was filled: a workflow cannot read the form
-            # that started it, so the step answers for itself.
+            # A manual run has no tag, so the name is the input it was given. What is checked here
+            # is what actually arrived, not whether a required field was filled: a workflow cannot
+            # read the form that started it, so the step answers for itself.
             tag=${INPUT_TAG:-}
             if [ -z "$tag" ]; then
               echo 'a manual run has no name: the input arrived empty, and this step does not invent one' >&2
@@ -81,16 +83,16 @@ jobs:
           else
             tag=$GITHUB_REF_NAME
           fi
-          # The shape is checked on the name whichever path supplied it, so the two ways of running this
-          # file cannot disagree about what a release name is. It is stricter than the trigger glob, so a
-          # tag that matches the glob but does not read as a version name is refused here rather than
-          # published under.
+          # The shape is checked on the name whichever path supplied it, so the two ways of running
+          # this file cannot disagree about what a release name is. It is stricter than the trigger
+          # glob, so a tag that matches the glob but does not read as a version name is refused here
+          # rather than published under.
           if ! grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' <<< "$tag"; then
             echo "the name this run is publishing under does not read as a release name: $tag" >&2
             exit 1
           fi
-          # The name says whether this is a pre-release, so the flag cannot disagree with the name a reader
-          # sees on the release.
+          # The name says whether this is a pre-release, so the flag cannot disagree with the name a
+          # reader sees on the release.
           case "$tag" in
             *-*) prerelease=true ;;
             *) prerelease=false ;;
@@ -99,9 +101,9 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           # The ref the run itself started from: refs/tags/<tag> when a tag triggered this,
-          # refs/heads/<branch> when a person did. This is what the keyless certificate carries as its
-          # identity, so it is not the same thing as the name being published under: on a manual run the
-          # image carries a name the certificate does not name.
+          # refs/heads/<branch> when a person did. This is what the keyless certificate carries as
+          # its identity, so it is not the same thing as the name being published under: on a manual
+          # run the image carries a name the certificate does not name.
           echo "ref=$GITHUB_REF" >> "$GITHUB_OUTPUT"
           kind=$([ "$prerelease" = true ] && echo pre-release || echo ordinary)
           echo "published under $tag as a $kind release, made by a run on $GITHUB_REF, from event $GITHUB_EVENT_NAME"
@@ -122,32 +124,42 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.names.outputs.image }}:${{ steps.names.outputs.tag }}
-          image_id: true
-          # Provenance is written as an attestation by the builder, so it is bound to the image id the
-          # push produced rather than to a file a later step could have replaced.
+          # Provenance is written as an attestation by the builder, so it is bound to the image the
+          # push produced rather than to a file a later step could have replaced. `image_id` was
+          # removed here because this action has no input of that name: the run said so on the
+          # runner.
           provenance: true
 
       - name: the pushed image carries both platforms
         id: digest
         run: |
-          # A manifest list is the only thing that can say this. A build that quietly produced one
-          # platform would still report success.
+          # A manifest list is the only thing that can say this: a build that quietly produced one
+          # platform still reports success. The first run of this step showed the reading was wrong:
+          # it asked buildx for `.Digest` and `.Platform`, and buildx answered that its template has
+          # neither, so the answer is read as the JSON the tool prints today, and both facts come
+          # out of one document rather than out of text in a shape the tool no longer writes.
           ref="${{ steps.names.outputs.image }}:${{ steps.names.outputs.tag }}"
-          out=$(docker buildx imagetools inspect "$ref" --format '{{.Digest}} {{.Platform}}')
+          out=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}')
           echo "$out"
-          for platform in linux/amd64 linux/arm64; do
-            if ! grep -q "$platform" <<< "$out"; then
-              echo "no $platform in the manifest list" >&2
-              exit 1
-            fi
-          done
-          digest=$(docker buildx imagetools inspect "$ref" --format '{{json .}}' \
-            | sed -n 's/.*"digest":"sha256:\([a-f0-9]\{64\}\)".*/\1/p')
-          if [ -z "$digest" ]; then
-            echo 'the pushed manifest has no digest to name' >&2
-            exit 1
-          fi
-          echo "digest=sha256:$digest" >> "$GITHUB_OUTPUT"
+          printf '%s' "$out" > manifest.json
+          python3 - <<'PY'
+          import json, re
+          d = json.load(open("manifest.json"))
+          want = {"linux/amd64", "linux/arm64"}
+          # An index answers with its entries. A single-platform build answers with one descriptor
+          # and no entries, which is what a build that quietly produced one platform looks like from
+          # the registry side, so this is the case the check refuses.
+          got = {m.get("platform") for m in d.get("manifests", []) if m.get("platform")}
+          if got != want:
+              raise SystemExit("the pushed document names %s, not both of %s"
+                               % (sorted(got) or ["nothing"], sorted(want)))
+          digest = str(d.get("digest", ""))
+          if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+              raise SystemExit("the pushed document names no digest to publish by: %r" % digest)
+          print("both platforms:", ", ".join(sorted(got)), "digest", digest)
+          open("digest.txt", "w").write(digest)
+          PY
+          echo "digest=$(cat digest.txt)" >> "$GITHUB_OUTPUT"
 
       - name: SBOM
         uses: anchore/sbom-action@v0.17.0
@@ -184,9 +196,9 @@ jobs:
           fi
           image='${{ steps.names.outputs.image }}'
           tag='${{ steps.names.outputs.tag }}'
-          # The signature and the attestation are attached to the tag, because a tag is what a reader
-          # names. They are attached to the digest as well, so a reader who pulls by digest — the only
-          # immutable name — can verify the same document.
+          # The signature and the attestation are attached to the tag, because a tag is what a
+          # reader names. They are attached to the digest as well, so a reader who pulls by digest —
+          # the only immutable name — can verify the same document.
           cosign sign --yes "$image:$tag"
           cosign sign --yes "$image@${{ steps.digest.outputs.digest }}"
           cosign attest --yes --type sbom --predicate sbom.spdx.json "$image:$tag"
@@ -195,14 +207,15 @@ jobs:
 
       - name: the signature verifies against this run
         run: |
-          # The only step here that can show a signature is readable: a sign that wrote nothing would
-          # report success. The identity is this workflow file plus the ref the run ran on, so this is the
-          # same check a reader runs, with the repository named.
+          # The only step here that can show a signature is readable: a sign that wrote nothing
+          # would report success. The identity is this workflow file plus the ref the run ran on, so
+          # this is the same check a reader runs, with the repository named.
           #
-          # The ref comes from the run, not from the name being published under, and on a manual run those
-          # are two different things: the image carries the name a person gave it, while the certificate
-          # names the branch the run started from. Checking the name here would be a check that could only
-          # pass for a build triggered by a tag, and would say nothing about this run.
+          # The ref comes from the run, not from the name being published under, and on a manual run
+          # those are two different things: the image carries the name a person gave it, while the
+          # certificate names the branch the run started from. Checking the name here would be a
+          # check that could only pass for a build triggered by a tag, and would say nothing about
+          # this run.
           if ! command -v cosign > /dev/null; then
             echo 'cosign is not on this runner' >&2
             exit 1
@@ -215,9 +228,9 @@ jobs:
 
       - name: the attestation verifies against this run
         run: |
-          # Writing a file is not the same as writing an attestation a reader can verify. This is the
-          # command the release body prints, run here so the run answers it, and it is read from the
-          # digest rather than from the name, because the digest is the immutable name.
+          # Writing a file is not the same as writing an attestation a reader can verify. This is
+          # the command the release body prints, run here so the run answers it, and it is read from
+          # the digest rather than from the name, because the digest is the immutable name.
           if ! command -v cosign > /dev/null; then
             echo 'cosign is not on this runner' >&2
             exit 1
@@ -227,9 +240,10 @@ jobs:
             --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
             '${{ steps.names.outputs.image }}@${{ steps.digest.outputs.digest }}')
           echo "$out"
-          # The payload has to be the document the build job wrote, not a signature that verifies over an
-          # empty predicate: the same two facts the SBOM step checked, read from what the registry served.
-          # The document is written to a file first, because the script below is read from stdin.
+          # The payload has to be the document the build job wrote, not a signature that verifies
+          # over an empty predicate: the same two facts the SBOM step checked, read from what the
+          # registry served. The document is written to a file first, because the script below is
+          # read from stdin.
           printf '%s' "$out" > attestation.json
           python3 - <<'PY'
           import json

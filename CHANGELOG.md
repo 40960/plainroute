@@ -224,6 +224,17 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   environment a runner would give rather than on a runner: breaking a release workflow
   to prove a check can fail would put an artifact in a registry, which is not what a
   falsification should cost.
+- The first real run of `release.yml` showed two readings that were assumptions about
+  the builder rather than readings of it. The step that proves both platforms are in the
+  pushed image asked buildx for `.Digest` and `.Platform`, and buildx answered that its
+  template has neither, so the run failed there: the image reached the registry, and
+  nothing after it ran, so there was no signature and no release to check. The step now
+  reads the JSON the tool prints, both facts out of one document rather than out of text
+  in a shape the tool no longer writes, and `image_id` is gone because the action has no
+  input of that name, which the run said on the runner. Each reading of the step was
+  shown to fail once against a deliberate break, in a shell with a stand for `docker`:
+  the same falsification a workflow file cannot do to itself, without putting a second
+  artifact in a registry.
 
 - `scripts/smoke-openai-compatible.sh` checks a live OpenAI-compatible endpoint the way
   a client sees it: the model list, a non-stream answer, a streamed answer, a tool call,
