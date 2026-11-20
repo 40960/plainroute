@@ -134,10 +134,12 @@ jobs:
         id: digest
         run: |
           # A manifest list is the only thing that can say this: a build that quietly produced one
-          # platform still reports success. The first run of this step showed the reading was wrong:
-          # it asked buildx for `.Digest` and `.Platform`, and buildx answered that its template has
-          # neither, so the answer is read as the JSON the tool prints today, and both facts come
-          # out of one document rather than out of text in a shape the tool no longer writes.
+          # platform still reports success. Two runs have now shown what the answer looks like: the
+          # first asked buildx for `.Digest` and `.Platform`, which its template does not have; the
+          # second read `platform` as a string, while the builder prints an object with `os` and
+          # `architecture`, plus two attestation entries named unknown/unknown. The check reads the
+          # answer it was given and asks whether the platforms a reader can run are among the
+          # entries.
           ref="${{ steps.names.outputs.image }}:${{ steps.names.outputs.tag }}"
           out=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}')
           echo "$out"
@@ -146,17 +148,25 @@ jobs:
           import json, re
           d = json.load(open("manifest.json"))
           want = {"linux/amd64", "linux/arm64"}
-          # An index answers with its entries. A single-platform build answers with one descriptor
-          # and no entries, which is what a build that quietly produced one platform looks like from
-          # the registry side, so this is the case the check refuses.
-          got = {m.get("platform") for m in d.get("manifests", []) if m.get("platform")}
-          if got != want:
-              raise SystemExit("the pushed document names %s, not both of %s"
-                               % (sorted(got) or ["nothing"], sorted(want)))
+
+          def named(entry):
+              p = entry.get("platform")
+              if isinstance(p, dict):
+                  return "/".join(str(p.get(k, "")) for k in ("os", "architecture"))
+              return p if isinstance(p, str) else ""
+
+          # Attestation entries are named unknown/unknown by the builder. They are not platforms a
+          # reader can run, so the check asks whether both wanted ones are present rather than
+          # requiring the document to have no other entries.
+          got = {named(m) for m in d.get("manifests", [])}
+          missing = sorted(want - got)
+          if missing:
+              raise SystemExit("the pushed document does not name %s; it names %s"
+                               % (", ".join(missing), ", ".join(sorted(got)) or "nothing"))
           digest = str(d.get("digest", ""))
           if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
               raise SystemExit("the pushed document names no digest to publish by: %r" % digest)
-          print("both platforms:", ", ".join(sorted(got)), "digest", digest)
+          print("both platforms:", ", ".join(sorted(want)), "digest", digest)
           open("digest.txt", "w").write(digest)
           PY
           echo "digest=$(cat digest.txt)" >> "$GITHUB_OUTPUT"

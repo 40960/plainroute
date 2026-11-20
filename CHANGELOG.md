@@ -224,17 +224,20 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   environment a runner would give rather than on a runner: breaking a release workflow
   to prove a check can fail would put an artifact in a registry, which is not what a
   falsification should cost.
-- The first real run of `release.yml` showed two readings that were assumptions about
-  the builder rather than readings of it. The step that proves both platforms are in the
-  pushed image asked buildx for `.Digest` and `.Platform`, and buildx answered that its
-  template has neither, so the run failed there: the image reached the registry, and
-  nothing after it ran, so there was no signature and no release to check. The step now
-  reads the JSON the tool prints, both facts out of one document rather than out of text
-  in a shape the tool no longer writes, and `image_id` is gone because the action has no
-  input of that name, which the run said on the runner. Each reading of the step was
-  shown to fail once against a deliberate break, in a shell with a stand for `docker`:
-  the same falsification a workflow file cannot do to itself, without putting a second
-  artifact in a registry.
+- Two real runs of `release.yml` showed readings that were assumptions about the builder
+  rather than readings of it. The first asked buildx for `.Digest` and `.Platform`; its
+  template has neither, so the step failed before anything was signed and the image
+  reached the registry unsigned. The step was changed to read the JSON buildx prints,
+  and `image_id` was removed because the action has no input of that name, which the run
+  said on the runner. The second run printed the JSON: `platform` is an object with `os`
+  and `architecture`, not a string, and the index carries two attestation entries named
+  `unknown/unknown`. The shell fixture had been written by hand with a string, so it
+  passed while the runner answered with a dict the code could not read. The fixture is
+  now the document that run printed, saved from its log, and the step asks whether both
+  runnable platforms are named rather than requiring the list to have no other entries.
+  Each reading was shown to fail once against a deliberate break, in a shell with a
+  stand for `docker`: breaking a release workflow on a runner would leave another
+  artifact in the registry, which is not what a falsification should cost.
 
 - `scripts/smoke-openai-compatible.sh` checks a live OpenAI-compatible endpoint the way
   a client sees it: the model list, a non-stream answer, a streamed answer, a tool call,
