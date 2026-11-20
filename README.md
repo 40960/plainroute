@@ -835,9 +835,14 @@ write `host.docker.internal` in the config file (the compose file maps that name
 gateway), not `127.0.0.1`.
 
 The name a published image carries is `ghcr.io/40960/plainroute`. The CI job builds the
-image without pushing it; only the release workflow publishes, on a `v*.*.*` tag, signs
-keyless against the identity of the run that built it, and writes a GitHub Release that
-names the version, the commit, the immutable digest and the two verify commands.
+image without pushing it; only the release workflow publishes. A name that exists as a
+tag is published by a tag push, and a name that is not pushed as a tag is published by a
+manual run: it is given the name as an input and does not invent one. The build is
+signed keyless against the identity of the run that made it, which names the ref that
+run started from, and the release names the version, the commit, the immutable digest,
+whether it is a pre-release, and the two verify commands a reader runs. The release body
+prints those commands with the ref of the run that published it, which is the tag for a
+tag build and the branch for a manual run.
 
 ## Security
 
@@ -1034,13 +1039,16 @@ docker inspect --format 'user={{.Config.User}} readonly={{.HostConfig.ReadonlyRo
 # tool, and CI never runs it against a provider.
 BASE_URL=https://your-host/v1 API_KEY=... MODEL=... ./scripts/smoke-openai-compatible.sh
 
-# the signature of a published image, from a machine with cosign
+# the signature of a published image, from a machine with cosign. <ref> is the ref the
+# run that published it started from: the tag when a tag triggered the build, the branch
+# when a person did, so these commands are for one particular run and not for the
+# image in general. The GitHub Release prints them with the ref of its own run.
 cosign verify \
-  --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@refs/tags/<tag>' \
+  --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@<ref>' \
   --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
   'ghcr.io/40960/plainroute@<digest>'
 cosign verify-attestation --type sbom \
-  --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@refs/tags/<tag>' \
+  --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@<ref>' \
   --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
   'ghcr.io/40960/plainroute@<digest>'
 ```

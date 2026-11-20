@@ -3,8 +3,8 @@ name: release
 
 # What this does: builds the image for linux/amd64 and linux/arm64, pushes it to GHCR, writes an
 # SPDX SBOM, signs the image with cosign in keyless mode against this run's identity, and publishes
-# a GitHub Release that names the version, the commit, the immutable digest and the commands a
-# reader runs to verify what they pulled.
+# a GitHub Release that names the version, the commit, the immutable digest, whether the release is a
+# pre-release, and the commands a reader runs to verify what they pulled.
 #
 # There is no signing key in this repository. Keyless signing binds the signature to the identity of
 # the workflow run that made it, so a build made anywhere else gives a different signature, and that
@@ -18,15 +18,28 @@ name: release
 # health check answering /healthz need a docker daemon on a machine, and the verification commands
 # below are the ones that take those numbers. Nothing here contacts a provider.
 #
-# Tags that trigger this are v0.0.0 shaped: a pre-release name such as v0.2.0-rc1 does not match, so
-# a release candidate is published by a manual run with TAG, which is also how the names step is
-# exercised without a tag.
+# Tags that trigger this are v0.0.0 shaped, and the glob also matches a pre-release name such as
+# v0.2.0-rc1, so a name that exists as a tag is published by a tag push. A manual run is the path for a
+# name that is not pushed as a tag: it has no tag to read, so the name it publishes under is the input it
+# was given, and that input has to be declared. Before this file declared it, the name could not be given
+# at all, and the step that reads it could only fail.
+#
+# The identity keyless signing binds to is the ref the run started from: refs/tags/<name> for a run
+# triggered by a tag, refs/heads/<branch> for a run a person started. That is not the same thing as the
+# name the image is published under, so the identity is read from the run, and the release prints it.
 
 on:
   push:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          The name to publish under, for example v0.1.0-rc1. This file does not invent a name for a
+          manual run: a run that guessed one could overwrite the image a reader pulls.
+        required: true
+        type: string
 
 permissions:
   contents: write # the release
@@ -40,29 +53,58 @@ jobs:
     outputs:
       image: ${{ steps.names.outputs.image }}
       tag: ${{ steps.names.outputs.tag }}
+      ref: ${{ steps.names.outputs.ref }}
+      prerelease: ${{ steps.names.outputs.prerelease }}
       digest: ${{ steps.digest.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
       - name: names
         id: names
+        env:
+          # The input arrives as data rather than as text inside the command, so a name is not a shell
+          # string. What the step checks is what actually arrived, not what the form was asked for.
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           # GHCR rejects an uppercase owner or image name, and the failure only appears at push
           # time, so the name is normalised here rather than carried from the repository name.
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/plainroute"
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            # A manual run has no tag. It publishes under the name it was given and refuses to guess
-            # one, so a run cannot quietly overwrite the release image.
-            tag=${TAG:-}
+            # A manual run has no tag, so the name is the input it was given. What is checked here is what
+            # actually arrived, not whether a required field was filled: a workflow cannot read the form
+            # that started it, so the step answers for itself.
+            tag=${INPUT_TAG:-}
             if [ -z "$tag" ]; then
-              echo 'TAG is required for a manual run' >&2
+              echo 'a manual run has no name: the input arrived empty, and this step does not invent one' >&2
               exit 1
             fi
           else
             tag=$GITHUB_REF_NAME
           fi
+          # The shape is checked on the name whichever path supplied it, so the two ways of running this
+          # file cannot disagree about what a release name is. It is stricter than the trigger glob, so a
+          # tag that matches the glob but does not read as a version name is refused here rather than
+          # published under.
+          if ! grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' <<< "$tag"; then
+            echo "the name this run is publishing under does not read as a release name: $tag" >&2
+            exit 1
+          fi
+          # The name says whether this is a pre-release, so the flag cannot disagree with the name a reader
+          # sees on the release.
+          case "$tag" in
+            *-*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
           echo "image=$image" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          # The ref the run itself started from: refs/tags/<tag> when a tag triggered this,
+          # refs/heads/<branch> when a person did. This is what the keyless certificate carries as its
+          # identity, so it is not the same thing as the name being published under: on a manual run the
+          # image carries a name the certificate does not name.
+          echo "ref=$GITHUB_REF" >> "$GITHUB_OUTPUT"
+          kind=$([ "$prerelease" = true ] && echo pre-release || echo ordinary)
+          echo "published under $tag as a $kind release, made by a run on $GITHUB_REF, from event $GITHUB_EVENT_NAME"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -154,17 +196,55 @@ jobs:
       - name: the signature verifies against this run
         run: |
           # The only step here that can show a signature is readable: a sign that wrote nothing would
-          # report success. The identity is this workflow file, so this is the same check a reader
-          # runs, with the repository named.
+          # report success. The identity is this workflow file plus the ref the run ran on, so this is the
+          # same check a reader runs, with the repository named.
+          #
+          # The ref comes from the run, not from the name being published under, and on a manual run those
+          # are two different things: the image carries the name a person gave it, while the certificate
+          # names the branch the run started from. Checking the name here would be a check that could only
+          # pass for a build triggered by a tag, and would say nothing about this run.
           if ! command -v cosign > /dev/null; then
             echo 'cosign is not on this runner' >&2
             exit 1
           fi
           cosign verify \
-            --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${{ steps.names.outputs.tag }}" \
+            --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${{ steps.names.outputs.ref }}" \
             --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
             '${{ steps.names.outputs.image }}@${{ steps.digest.outputs.digest }}' \
             | python3 -c 'import json,sys; d=json.load(sys.stdin)[0]; print(d["critical"]["identity"], d["payload"]["optionalPayload"])'
+
+      - name: the attestation verifies against this run
+        run: |
+          # Writing a file is not the same as writing an attestation a reader can verify. This is the
+          # command the release body prints, run here so the run answers it, and it is read from the
+          # digest rather than from the name, because the digest is the immutable name.
+          if ! command -v cosign > /dev/null; then
+            echo 'cosign is not on this runner' >&2
+            exit 1
+          fi
+          out=$(cosign verify-attestation --type sbom \
+            --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${{ steps.names.outputs.ref }}" \
+            --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
+            '${{ steps.names.outputs.image }}@${{ steps.digest.outputs.digest }}')
+          echo "$out"
+          # The payload has to be the document the build job wrote, not a signature that verifies over an
+          # empty predicate: the same two facts the SBOM step checked, read from what the registry served.
+          # The document is written to a file first, because the script below is read from stdin.
+          printf '%s' "$out" > attestation.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open('attestation.json'))[0]
+          payload = d["payload"].get("optionalPayload")
+          if isinstance(payload, str):
+              payload = json.loads(payload)
+          predicate = payload.get("predicate") or {}
+          components = [c for c in predicate.get("packages", []) if c.get("name")]
+          if not str(predicate.get("spdxVersion", "")).startswith("SPDX"):
+              raise SystemExit("the attestation is not an SPDX document: %r" % predicate.get("spdxVersion"))
+          if not components:
+              raise SystemExit("the attestation names no components")
+          print(d["critical"]["identity"], predicate["spdxVersion"], len(components), "components")
+          PY
 
       - uses: actions/upload-artifact@v4
         with:
@@ -186,6 +266,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.build.outputs.tag }}
+          # The flag comes from the name the run published under, so a run cannot mark a release the
+          # other way round than the name says: a plain version is not a pre-release, a name with a
+          # pre-release part is.
+          prerelease: ${{ needs.build.outputs.prerelease }}
           files: sbom.spdx.json
           body: |
             ## What is published
@@ -196,6 +280,8 @@ jobs:
             | Immutable digest | `${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}` |
             | Platforms | `linux/amd64`, `linux/arm64` |
             | Commit | `${{ github.sha }}` |
+            | Pre-release | `${{ needs.build.outputs.prerelease }}` |
+            | Signing identity | `https://github.com/40960/plainroute/.github/workflows/release.yml@${{ needs.build.outputs.ref }}` |
             | Licence | AGPL-3.0-only |
 
             Pull the digest, not the tag: a tag on GHCR can be moved by a later push, a digest cannot.
@@ -207,18 +293,21 @@ jobs:
 
             ```bash
             cosign verify \
-              --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@refs/tags/${{ needs.build.outputs.tag }}' \
+              --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@${{ needs.build.outputs.ref }}' \
               --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
               '${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}'
 
             cosign verify-attestation --type sbom \
-              --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@refs/tags/${{ needs.build.outputs.tag }}' \
+              --certificate-identity-regexp 'https://github.com/40960/plainroute/.github/workflows/release.yml@${{ needs.build.outputs.ref }}' \
               --certificate-issuer-regexp 'https://github.com/sigstore/.*@token.actions.githubusercontent.com' \
               '${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}'
             ```
 
             The signing identity is a workflow run, not a key: a build made somewhere else gives a
-            different signature, which is the point of checking it.
+            different signature, which is the point of checking it. The ref in that identity is the ref
+            the run started from, which is the tag when a tag triggered the build and the branch when a
+            person did, so these commands are right for the run that published this image and for no
+            other one.
 
             ## Run
 

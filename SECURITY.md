@@ -160,8 +160,10 @@ Measured on a machine, not by CI:
 - The log and the metrics page: send a request with a key value you can recognise, then search
   the log lines and `GET /metrics` for it. The search returns nothing, and that is the check.
 - A published image: `cosign verify` and `cosign verify-attestation --type sbom`, with the
-  identity regexp naming this repository's release workflow. The signature is bound to the run
-  that built the image, so a build from anywhere else does not verify against it.
+  identity regexp naming this repository's release workflow and the ref the publishing run
+  started from, which is the tag for a tag build and the branch for a manual run. The
+  signature is bound to the run that built the image, so a build from anywhere else does
+  not verify against it.
 - The smoke script (`scripts/smoke-openai-compatible.sh`): CI runs it against the project's own
   fake upstream, never against a provider, and checks both that its checks pass and that each
   can fail against an answer that should not satisfy it. Its output prints status, timings and

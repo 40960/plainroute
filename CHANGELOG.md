@@ -208,7 +208,22 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   the steps claim to need, the quoting inside each run block, the duplicate-key rule,
   and the rule that the release cannot attach a file its own job never created. What the
   file cannot check — image size, the container settings, the health check answering
-  /healthz — is written in the README as a measurement with the command that takes it.
+/healthz — is written in the README as a measurement with the command that takes it. -
+- Two readings of `release.yml` about a manual run were wrong, and are fixed. The
+  trigger declared no input while the step read a name from the environment, so a manual
+  run could not be given a name at all: the step could only print that a name was
+  required. The input is now declared, and the name is checked as data — not empty, and
+  the shape of a release name, the same rule for both paths, which is stricter than the
+  trigger glob, so a tag that matches the glob but is not a version name is refused
+  rather than published. The keyless identity is read from the ref the run started from,
+  because on a manual run that is the branch and not the name the image carries, and the
+  SBOM attestation is verified inside the run, so the command the release body prints
+  for a reader is a command the run itself ran. The pre-release flag is read from the
+  name, so a run cannot label a release the other way round than its own name says. Each
+  reading was shown to fail once against a deliberate break, in a shell with the
+  environment a runner would give rather than on a runner: breaking a release workflow
+  to prove a check can fail would put an artifact in a registry, which is not what a
+  falsification should cost.
 
 - `scripts/smoke-openai-compatible.sh` checks a live OpenAI-compatible endpoint the way
   a client sees it: the model list, a non-stream answer, a streamed answer, a tool call,
