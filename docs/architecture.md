@@ -59,8 +59,11 @@ These are the properties the tests exist to protect. A change that breaks one of
 behaviour change, not a refactor.
 
 1. **One client request produces at most one upstream attempt** (default config). Verified
-   by 50 requests against an upstream that always returns 429, and by `cmd/bench` comparing
-   `requests_total` with `upstream_attempts_total` under load.
+   by 50 requests against an upstream that always returns 429, and by `cmd/bench` taking a
+   metrics baseline before the load and checking that the upstream-attempt delta does not
+   exceed the number of client requests it issued. The two deltas need not be equal: a
+   client disconnect and a gateway rejection are counted separately and reported as
+   auxiliaries.
 2. **A target that is cooling down is never selected.** A cooldown is recorded when a
    status code matches `routing.cooldown.status`, when a `Retry-After` arrives, or after a
    connection or idle failure when `routing.cooldown.timeout` is non-zero.
@@ -227,9 +230,11 @@ version of the file, because both came from the same generation.
 still a healthy process. Readiness goes false only while draining, which is what a load
 balancer should act on.
 
-**Selection is deterministic.** `least_active` with stable sort, ties keep config order, so a
-test can assert which target was chosen. `round_robin` rotates the candidate list while
-cooling targets keep their position out of the rotation until they recover.
+**Selection is deterministic.** `least_active` with stable sort, ties keep config order,
+so a test can assert which target was chosen. `round_robin` rotates the currently
+selectable candidates. A cooling or otherwise unavailable target is not a candidate while
+it is out and re-enters the rotation when it becomes selectable again; it does not keep a
+reserved position.
 
 **`TryAcquire` checks and increments under one lock**, so two goroutines cannot both believe
 they own the same slot. Every path that acquires must release: normal completion, an upstream

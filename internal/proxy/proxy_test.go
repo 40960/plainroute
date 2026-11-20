@@ -690,8 +690,10 @@ routes:
 	}
 }
 
-// TestNoRetryAmplification is the core regression test: 50 client requests must
-// never become more than 50 upstream attempts.
+// TestNoRetryAmplification is the core regression test: 50 client requests must never
+// become more than 50 upstream attempts. The bound is read against the requests this test
+// issued, not against a counter that a disconnect or a gateway rejection could move
+// independently.
 func TestNoRetryAmplification(t *testing.T) {
 	h := newHarness(t, `
 routes:

@@ -2,9 +2,11 @@
 
 // Package metrics exposes PlainRoute's counters and histograms on /metrics.
 //
-// The pair requests_total / upstream_attempts_total is the point of this
-// package: with retry disabled they must match, so anyone can prove the gateway
-// does not amplify one client request into several upstream calls.
+// The pair requests_total / upstream_attempts_total is the point of this package: the
+// upstream counter must not exceed one attempt per client request, which is what proves the
+// gateway does not amplify. The two need not match: a client that disconnects can leave an
+// attempt with no completed client request, and a rejection from gateway state raises the
+// request counter alone.
 package metrics
 
 import (
@@ -61,7 +63,7 @@ func New() *Metrics {
 		}, []string{"route", "target", "status_class"}),
 		UpstreamAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_upstream_attempts_total",
-			Help: "Upstream requests actually sent. With retry disabled this matches requests_total for proxied requests.",
+			Help: "Upstream requests actually sent. At most one per client request; a client that disconnects can leave an attempt with no completed client request.",
 		}, []string{"route", "target", "status_class"}),
 		ActiveRequests: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "plainroute_active_requests",

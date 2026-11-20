@@ -174,6 +174,15 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   `plainroute_stream_aborts_total`. The help text now names the five kinds the collector can
   hold: `build_request`, `transport`, `timeout`, `stream_idle`, `client_gone`. The metrics test
   compares the collected text, so the help text and the label names are checked, not assumed.
+- Two descriptions were broader than the behaviour they describe. The no-amplification
+  claim was that the two request counters match; a client disconnect can add an upstream
+  attempt without a client request, so `cmd/bench` now reads a metrics baseline before
+  the load and compares the upstream-attempt delta with the client requests it issued.
+  Gateway rejections and client disconnects are reported beside it as auxiliaries, and a
+  new unit test fixes the delta rule. `round_robin` was said to keep a cooling target's
+  position in the rotation; it rotates the currently selectable candidates, and a
+  recovered target re-enters in its turn. The round-robin test now pins that cooldown
+  and recovery sequence. No metric or selection behaviour changed.
 
 ### Tests
 
@@ -282,8 +291,10 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
 - A section for a client that owns retry, such as OpenCode: what the gateway keeps for a
   client that branches on a status (the status, the body byte for byte, `Retry-After` as
   the window it applied, one attempt per request), and the two counters that make a
-  client's retries readable — `requests_total` against `upstream_attempts_total`, which
-  are equal while no fallback is configured.
+  client's retries readable — `requests_total` against `upstream_attempts_total`. The bound
+  is one upstream attempt per client request, not equality between the counters: a client
+  disconnect can leave an attempt with no counted request, and a gateway rejection raises
+  only the request counter.
 - The verification commands, kept apart from the claims: what a gate checks on every
   push, and what only a machine with a docker daemon, cosign and a tag can measure.
   SECURITY.md and the README now say which claim is which kind. The claim about

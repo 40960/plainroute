@@ -700,11 +700,12 @@ curl -s http://127.0.0.1:8080/metrics | grep -E 'requests_total|upstream_attempt
 ```
 
 `requests_total` counts client requests and `upstream_attempts_total` counts upstream
-calls. While no fallback is configured the two are equal. When a client retries, the
-second grows with those retries, which is why they are kept apart: the growth is the
-client's, and it stays visible. Two numbers that drift apart while no client retried
-would mean something inside the gateway repeated a request, which is not what this
-project does.
+calls. Both grow with the traffic the client sends, including its retries, and they are
+kept apart so that retry traffic stays visible. The promise is an upper bound, not
+equality: one client request never causes more than one upstream attempt, but the two
+counters need not match. A client that disconnects can leave an upstream attempt with no
+counted client request, and a request the gateway answers from its own state adds to
+`requests_total` without contacting an upstream.
 
 The numbers `config.example.yaml` and the generator write — 32 MiB for a request, 64 MiB
 for a response, a 30 second clamp — are for the shape a coding agent sends: a long
@@ -766,10 +767,15 @@ response cap is a reason on `plainroute_stream_aborts_total`, not an upstream fa
 carries `kind` on two events, `stream_ended_early` and `upstream_request_failed`, and there its
 values are `transport`, `timeout`, `stream_idle`, `client_gone`.
 
-`requests_total` and `upstream_attempts_total` are kept separately on purpose. With retry
-disabled they should be the same number for proxied requests, and the difference is exactly
-the requests the gateway answered itself. `cmd/bench` reads these numbers from the gateway
-rather than counting them on the client, and fails if they disagree.
+`requests_total` and `upstream_attempts_total` are kept separately on purpose. The bound
+`cmd/bench` checks is per client request: it reads both counters before and after a load
+run, and the upstream-attempt delta must not exceed the number of client requests it
+issued. The deltas need not be equal. A client that disconnects can leave an upstream
+attempt with no counted client request, and a request the gateway rejects from its own
+state adds to `requests_total` alone. Those two cases are reported separately as
+`plainroute_client_disconnects_total` and `plainroute_gateway_rejected_total`, so a
+reader can tell why the counters differ instead of reading the difference as gateway
+retries.
 
 A retry by the client is a new client request, so it raises both counters by one. Nothing
 here raises `requests_total` without a request, and nothing raises

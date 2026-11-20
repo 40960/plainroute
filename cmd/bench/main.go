@@ -2,8 +2,11 @@
 
 // plainroute-bench is a load generator for a running gateway. It sends requests,
 // measures what the client sees, then reads the gateway's own numbers from its metrics
-// page. The two sets of numbers must agree: that is the no-amplification invariant
-// checked under load, not only in a unit test.
+// page. It reads that page before and after the load: the upstream-attempt delta must not
+// exceed the number of client requests this client issued. That is the no-amplification
+// invariant checked under load, not only in a unit test. Gateway rejections and client
+// disconnects are reported beside it, because they explain a difference between the
+// request and attempt counters without being breaches of the bound.
 //
 // It is not a benchmark of a provider. It measures the gateway: what it adds to the
 // path, and whether its counters come back to zero after the load stops.
@@ -64,6 +67,12 @@ func main() {
 	body := []byte(fmt.Sprintf(`{"model":%q,"stream":%t,"messages":[{"role":"user","content":"bench"}]}`,
 		*model, *stream))
 
+	baseline, err := fetchMetrics(client, *url, *metricsPath)
+	if err != nil {
+		fmt.Printf("\ngateway metrics baseline: %v\n", err)
+		return
+	}
+
 	results := make([]outcome, *requests)
 	next := int64(0)
 	var wg sync.WaitGroup
@@ -92,7 +101,7 @@ func main() {
 		fmt.Printf("\ngateway metrics: %v\n", err)
 		return
 	}
-	printGateway(page)
+	printGateway(baseline, page, *requests)
 }
 
 func doRequest(client *http.Client, url string, body []byte) outcome {
@@ -189,9 +198,11 @@ func printReport(results []outcome, elapsed time.Duration, requests, concurrency
 		mem.HeapAlloc/1024, mem.TotalAlloc/1024, mem.NumGC, runtime.NumGoroutine())
 }
 
-// printGateway reports the numbers the gateway keeps. The request and attempt counters
-// must match, and every gauge must be back at zero after the load stopped.
-func printGateway(page string) {
+// printGateway reports the numbers the gateway keeps, as totals and as deltas from the
+// baseline read before the load. The bound is on the upstream-attempt delta against the
+// requests this client issued; a rejection or a disconnect can make the two counters drift
+// apart without breaching it. Every gauge must be back at zero after the load stopped.
+func printGateway(baselinePage, page string, clientRequestsIssued int) {
 	samples := parseExposition(page)
 
 	wanted := []string{
@@ -209,8 +220,10 @@ func printGateway(page string) {
 	}
 
 	fmt.Printf("\ngateway, read from its own metrics page:\n")
-	totals := map[string]float64{}
-	seen := map[string]int{}
+	totals, before, seen := map[string]float64{}, map[string]float64{}, map[string]int{}
+	for _, s := range parseExposition(baselinePage) {
+		before[s.name] += s.value
+	}
 	for _, s := range samples {
 		totals[s.name] += s.value
 		seen[s.name]++
@@ -224,27 +237,35 @@ func printGateway(page string) {
 		if strings.HasSuffix(name, "_bytes") {
 			unit = fmt.Sprintf(" (%d KB)", int64(totals[name]/1024))
 		}
-		fmt.Printf("  %-36s %s%s\n", name, trimNumber(totals[name]), unit)
+		fmt.Printf("  %-36s %s (+%s)%s\n", name, trimNumber(totals[name]),
+			trimNumber(totals[name]-before[name]), unit)
 	}
 
-	// The point of reading these numbers from the gateway instead of counting them
-	// here: the two counters must agree, and the gauges must be back at zero after the
-	// load stopped.
-	if seen["plainroute_requests_total"] > 0 && seen["plainroute_upstream_attempts_total"] > 0 {
-		requests, attempts := totals["plainroute_requests_total"], totals["plainroute_upstream_attempts_total"]
-		verdict := "ok"
-		if attempts > requests {
-			verdict = "FAIL: more upstream attempts than client requests"
-		}
-		fmt.Printf("  %-36s %d attempts for %d requests: %s\n",
-			"no amplification", int64(attempts), int64(requests), verdict)
+	// This client knows how many requests it issued, and the baseline keeps traffic from
+	// earlier runs out of the comparison. The bound is one upstream attempt per request
+	// issued; equality is not expected, because a rejection or a disconnect can change one
+	// counter without the other.
+	attempts := totals["plainroute_upstream_attempts_total"] - before["plainroute_upstream_attempts_total"]
+	verdict := "ok"
+	if seen["plainroute_upstream_attempts_total"] == 0 {
+		verdict = "FAIL: no upstream attempts counter on the metrics page"
+	} else if attempts > float64(clientRequestsIssued) {
+		verdict = "FAIL: more upstream attempts than client requests issued"
+	}
+	fmt.Printf("  %-36s %d attempts since baseline for %d client requests issued: %s\n",
+		"no amplification", int64(attempts), clientRequestsIssued, verdict)
 
-		gauges := []string{"plainroute_active_requests", "plainroute_in_flight_requests"}
-		for _, name := range gauges {
-			if seen[name] > 0 && totals[name] != 0 {
-				fmt.Printf("  %-36s %s FAIL: gauge still %s after the load stopped\n",
-					name, name, trimNumber(totals[name]))
-			}
+	// These explain a difference between the two counters; they are not part of the bound.
+	fmt.Printf("  %-36s +%d (auxiliary; answered from gateway state)\n", "gateway rejected",
+		int64(totals["plainroute_gateway_rejected_total"]-before["plainroute_gateway_rejected_total"]))
+	fmt.Printf("  %-36s +%d (auxiliary; client left before the response)\n", "client disconnects",
+		int64(totals["plainroute_client_disconnects_total"]-before["plainroute_client_disconnects_total"]))
+
+	gauges := []string{"plainroute_active_requests", "plainroute_in_flight_requests"}
+	for _, name := range gauges {
+		if seen[name] > 0 && totals[name] != 0 {
+			fmt.Printf("  %-36s %s FAIL: gauge still %s after the load stopped\n",
+				name, name, trimNumber(totals[name]))
 		}
 	}
 }

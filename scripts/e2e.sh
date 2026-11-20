@@ -499,7 +499,7 @@ printf '\n5. 100+ concurrent requests: no race, no panic, no leak\n'
   -stream > "$WORK/bench.txt" 2>&1
 has "every concurrent request succeeded" '2xx=140' "$(cat "$WORK/bench.txt")"
 has "no transport error" 'transport errors: 0' "$(cat "$WORK/bench.txt")"
-has "client requests and upstream attempts match" 'no amplification.*ok' "$(cat "$WORK/bench.txt")"
+has "upstream attempts do not exceed client requests issued" 'no amplification.*ok' "$(cat "$WORK/bench.txt")"
 has "the only request the gateway answered from its own state is the all-cooling one" 'plainroute_gateway_rejected_total[[:space:]]\+1' "$(cat "$WORK/bench.txt")"
 has "the active counter came back to zero" 'plainroute_active_requests[[:space:]]\+0' "$(cat "$WORK/bench.txt")"
 has "in flight is back to zero" 'plainroute_in_flight_requests[[:space:]]\+0' "$(cat "$WORK/bench.txt")"

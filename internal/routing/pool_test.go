@@ -89,16 +89,29 @@ func TestRoundRobinRotatesHealthyDeployments(t *testing.T) {
 		}
 	}
 
-	// Cooldown removes c from rotation; the remaining targets keep their
-	// relative order instead of restarting from the top.
+	// Cooldown removes c from the candidates; the rotation continues over the two that
+	// remain rather than restarting from the top.
 	pool.Cooldown(pool.Targets[indexOf(pool, "c")], 10*time.Second, "rate_limit")
 	for _, expect := range []string{"a", "b"} {
 		d, ok := pool.Pick()
 		if !ok {
-			t.Fatalf("pick: not selectable")
+			t.Fatalf("pick while c is cooling: not selectable")
 		}
 		if d.Name != expect {
 			t.Errorf("while c is cooling: got %s, want %s", d.Name, expect)
+		}
+	}
+
+	// Recovery puts c back into the candidate list; it takes its turn in the rotation
+	// instead of holding a reserved position through the cooldown.
+	clock.Advance(11 * time.Second)
+	for i, expect := range []string{"c", "a", "b"} {
+		d, ok := pool.Pick()
+		if !ok {
+			t.Fatalf("pick %d after recovery: not selectable", i)
+		}
+		if d.Name != expect {
+			t.Errorf("pick %d after recovery: got %s, want %s", i, d.Name, expect)
 		}
 	}
 }

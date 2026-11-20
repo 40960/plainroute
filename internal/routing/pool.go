@@ -192,9 +192,9 @@ func (p *Pool) Pick() (*Target, bool) {
 		p.mu.Lock()
 		start := p.cursor
 		p.mu.Unlock()
-		// Rotate the candidate list so the next request starts where the last
-		// one left off, while cooling targets keep their position out of the
-		// rotation until they recover.
+		// Rotate the selectable candidates so the next request starts where the last one
+		// left off. Cooling and unavailable targets are not candidates at all: they leave
+		// the rotation while out and re-enter it when they become selectable again.
 		rotated := make([]*Target, 0, len(candidates))
 		for i := range candidates {
 			rotated = append(rotated, candidates[(start+i)%len(candidates)])

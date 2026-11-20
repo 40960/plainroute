@@ -32,8 +32,10 @@ type outcome struct {
 }
 
 // attempt performs exactly one upstream request. This function is the reason the
-// amplification invariant holds: it is called at most once per client request
-// unless a fallback target is explicitly configured.
+// amplification invariant holds: it is called at most once per client request unless a
+// fallback target is explicitly configured. A client that leaves during an attempt can still
+// leave an upstream attempt counted without a completed client request, which is why the
+// bound is checked against the requests the caller issued, not against requests_total.
 func (h *Handler) attempt(
 	w http.ResponseWriter,
 	r *http.Request,
