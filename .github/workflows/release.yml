@@ -256,18 +256,29 @@ jobs:
           printf '%s' "$out" > signature.json
           python3 - <<'PY'
           import json
-          # This is the output cosign v2.6.5 prints: a list with a `critical` object carrying the
-          # identity, the digest and the signature type. This file previously read `payload` from
-          # it, a field that is not there, so a signature that verified could not be shown to be
-          # readable.
-          d = json.load(open('signature.json'))[0]['critical']
-          digest = d['image']['docker-manifest-digest']
+          # This is what cosign v2.6.5 printed for the image this run signed: a list with a
+          # `critical` object and an `optional` object carrying the certificate's Subject and
+          # Issuer. A public image signed by a different cosign version printed a different `type`
+          # string, so the fixture here is the answer this workflow's own signing step printed, not
+          # another project's image.
+          d = json.load(open('signature.json'))[0]
+          critical = d['critical']
+          optional = d.get('optional') or {}
+          digest = critical['image']['docker-manifest-digest']
           want = '${{ steps.digest.outputs.digest }}'
           if digest != want:
               raise SystemExit('the signature names digest %s, not the digest checked: %s' % (digest, want))
-          if d['type'] != 'https://sigstore.dev/cosign/sign/v1':
-              raise SystemExit('the signature is not a cosign image signature: %r' % d['type'])
-          print(d['identity'], d['type'], digest)
+          if critical['type'] != 'cosign container image signature':
+              raise SystemExit('the signature is not a cosign image signature: %r' % critical['type'])
+          # The verifier already requires this identity and issuer of the certificate; read them
+          # back from what it printed, so a signature that verified for another run cannot be shown
+          # as this run's own without saying so.
+          subject = 'https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ steps.names.outputs.ref }}'
+          if optional.get('Subject') != subject:
+              raise SystemExit('the certificate names %r, not this run: %r' % (optional.get('Subject'), subject))
+          if optional.get('Issuer') != 'https://token.actions.githubusercontent.com':
+              raise SystemExit('the certificate issuer is %r' % optional.get('Issuer'))
+          print(optional['Subject'], critical['type'], digest)
           PY
 
       - name: the attestation verifies against this run

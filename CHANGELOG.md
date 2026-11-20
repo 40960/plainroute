@@ -224,7 +224,7 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   environment a runner would give rather than on a runner: breaking a release workflow
   to prove a check can fail would put an artifact in a registry, which is not what a
   falsification should cost.
-- Five real runs of `release.yml` each showed a reading that was an assumption rather
+- Six real runs of `release.yml` each showed a reading that was an assumption rather
   than a reading of the tool. The first asked buildx for `.Digest` and `.Platform`; its
   template has neither, so the image reached the registry unsigned. The second printed
   the JSON: `platform` is an object with `os` and `architecture`, not a string, and the
@@ -247,7 +247,12 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   `--certificate-issuer-regexp`, and the value named a repository rather than the
   issuer. A public image signed by a GitHub Actions run verified locally against
   `https://token.actions.githubusercontent.com`, so both verify steps and the commands
-  printed for a reader now use that issuer with the flag v2.6.5 accepts. Fixtures are
+  printed for a reader now use that issuer with the flag v2.6.5 accepts. The sixth run
+  verified both signatures but failed on a type string taken from a public image signed
+  by a different cosign: this workflow's v2 signature prints `cosign container image
+  signature`, not the newer URI. The fixture is now the signature this workflow's own
+  run printed, and the step reads the certificate Subject and Issuer out of that answer
+  as well, so a signature verified for another run is named as such. Fixtures are
   printed answers, not inventions, and each reading was shown to fail once against a
   deliberate break, in a shell with a stand for the tool: breaking a release workflow on
   a runner would leave another artifact in the registry.
