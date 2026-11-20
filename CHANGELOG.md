@@ -183,6 +183,25 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   position in the rotation; it rotates the currently selectable candidates, and a
   recovered target re-enters in its turn. The round-robin test now pins that cooldown
   and recovery sequence. No metric or selection behaviour changed.
+- A bounded pre-v0.1.0 pass fixed the remaining confirmed findings from source review
+  and a real canary. Selection in `Pick` is now one critical section shared with
+  `Release` and `Cooldown`, so concurrent `round_robin` and `least_active` picks use
+  their snapshot once; capacity exhaustion is reported as `all_targets_busy` instead of
+  a cooldown, with no invented Retry-After, and a fallback chain is judged as a whole.
+  `peekBody` consumes the closing brace and requires exactly one JSON object, and
+  refuses a duplicate top-level `model`. Configured headers can no longer override the
+  target key, reserved or malformed headers are refused at load, and
+  `Connection`-nominated names are stripped in both directions; the gateway
+  `X-Request-Id` cannot be duplicated by an upstream header. Both response-copy paths
+  share one reader and instrumentation: a response ending exactly at the cap is
+  complete, cap+1 is refused without sending the extra byte, and non-2xx errors are
+  recorded. Attempts include transport failures with `status_class=other`; the cooldown
+  gauge is rebuilt from current state at each scrape; gateway rejections are counted
+  only for local refusals. More than one fallback per route and a negative `max_hops`
+  are startup errors; the smoke script parses JSON instead of grepping the first
+  `object`; generated configs are created 0600; shutdown has a deadline; SIGHUP applies
+  a new reload interval immediately; and the binary version is injected at build time,
+  with Alpine 3.24 and the current Go patch in the image.
 
 ### Tests
 

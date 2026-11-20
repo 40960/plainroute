@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-FROM golang:1.27-alpine AS build
+FROM golang:1.27.4-alpine3.24 AS build
+
+ARG VERSION=dev
 
 WORKDIR /src
 
@@ -9,9 +11,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/plainroute ./cmd/plainroute
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/plainroute ./cmd/plainroute
 
-FROM alpine:3.20
+FROM alpine:3.24
 
 LABEL org.opencontainers.image.title="plainroute" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \

@@ -124,6 +124,9 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.names.outputs.image }}:${{ steps.names.outputs.tag }}
+          # The version the binary reports is the name this run publishes under, not a
+          # constant in the source. A plain `go build` still reports dev.
+          build-args: VERSION=${{ steps.names.outputs.tag }}
           # Provenance is written as an attestation by the builder, so it is bound to the image the
           # push produced rather than to a file a later step could have replaced. `image_id` was
           # removed here because this action has no input of that name: the run said so on the

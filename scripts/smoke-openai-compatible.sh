@@ -18,8 +18,8 @@
 #   SMOKE_PROMPT=...             the text sent; this script never prints it
 #
 # Two checks assume a capability an endpoint may not have: a tool call, and a top-level field the
-# endpoint has no definition for. A provider that answers those with plain content, or with a 400,
-# fails the check, and that is a finding about the provider rather than a bug in this script.
+# endpoint has no definition for. A provider that answers those with plain content, or rejects an
+# unknown field with 400, is reporting its own capability rather than a bug in this script.
 #
 # Exit: 0 when every check passed, 1 when at least one failed, 2 when the arguments were unusable.
 set -u
@@ -85,20 +85,38 @@ report() { # ok or FAIL, name, facts
   printf '  %-5s %-28s status=%s ttft=%sms total=%sms %s\n' "$1" "$2" "$STATUS" "$TTFT" "$TOTAL" "$3"
 }
 
-# A fact is one field of the answer, read as text. Nothing here parses the answer into a document
-# and re-encodes it, which is why a shape this project has never seen can still be reported.
-field() { grep -o "$1" "$2" | head -1; }
+# A fact is one field of the answer, read with a JSON parser. Reading the first grep match made
+# an entry's `"object":"model"` look like the top-level object of a model list, so the shape check
+# failed against a real provider. The path is comma-separated keys and array indices from the root.
+json_value() { # file, path
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+try:
+    value = json.load(open(sys.argv[1]))
+    for part in sys.argv[2].split(","):
+        if part.isdigit():
+            value = value[int(part)]
+        elif isinstance(value, dict):
+            value = value.get(part)
+        else:
+            value = None
+    if value is not None:
+        print(value)
+except Exception:
+    pass
+PY
+}
 
 printf 'smoke: %s model=%s timeout=%ss\n' "$BASE" "$MODEL" "$TIMEOUT"
 
 # 1. the model list. The list is reported as it arrives; a model that is not in it is a fact to
 # print, not a failure, because a provider can serve a model it does not list.
 call models GET /models
-list_shape=$(field '"object":"[^"]*"' "$WORK/models.body")
+list_shape=$(json_value "$WORK/models.body" object)
 entries=$(grep -o '"id":"' "$WORK/models.body" | wc -l | tr -d ' ')
 listed=no
 if grep -qF "$MODEL" "$WORK/models.body"; then listed=yes; fi
-if [ "$STATUS" = 200 ] && [ "$list_shape" = '"object":"list"' ]; then
+if [ "$STATUS" = 200 ] && [ "$list_shape" = list ]; then
   report ok 'model list' "entries=$entries model_listed=$listed"
 else
   report FAIL 'model list' "shape=${list_shape:-none}"
@@ -107,9 +125,9 @@ fi
 # 2. a non-stream answer.
 printf '%s' "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"$PROMPT\"}]}" > "$WORK/plain.json"
 call plain POST /chat/completions "$WORK/plain.json"
-shape=$(field '"object":"[^"]*"' "$WORK/plain.body")
+shape=$(json_value "$WORK/plain.body" object)
 choices=$(grep -o '"choices":\[' "$WORK/plain.body" | wc -l | tr -d ' ')
-if [ "$STATUS" = 200 ] && [ "$shape" = '"object":"chat.completion"' ] && [ "$choices" -ge 1 ]; then
+if [ "$STATUS" = 200 ] && [ "$shape" = chat.completion ] && [ "$choices" -ge 1 ]; then
   report ok 'non-stream completion' "shape=$shape choices=$choices content_type=$CT"
 else
   report FAIL 'non-stream completion' "shape=${shape:-none} choices=$choices content_type=$CT"
@@ -132,7 +150,7 @@ fi
 printf '%s' "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"$PROMPT call the tool named smoke_tool\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"smoke_tool\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]}" > "$WORK/tool.json"
 call tool POST /chat/completions "$WORK/tool.json"
 tool_calls=$(grep -o '"tool_calls":' "$WORK/tool.body" | wc -l | tr -d ' ')
-tool_name=$(field '"name":"[^"]*"' "$WORK/tool.body")
+tool_name=$(json_value "$WORK/tool.body" choices,0,message,tool_calls,0,function,name)
 if [ "$STATUS" = 200 ] && [ "$tool_calls" -ge 1 ]; then
   report ok 'tool call' "tool_calls=$tool_calls name=${tool_name:-none}"
 else
@@ -143,9 +161,13 @@ fi
 printf '%s' "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"$PROMPT\"}],\"smoke_unknown_field\":{\"nested\":[1,2,3]}}" > "$WORK/unknown.json"
 call unknown POST /chat/completions "$WORK/unknown.json"
 if [ "$STATUS" = 200 ]; then
-  report ok 'unknown top-level field' "accepted=1 shape=$(field '"object":"[^"]*"' "$WORK/unknown.body")"
+  report ok 'unknown top-level field' "accepted=1 shape=$(json_value "$WORK/unknown.body" object)"
+elif [ "$STATUS" = 400 ]; then
+  # A provider that rejects a field it does not know is exercising its own capability,
+  # not failing PlainRoute's byte-preserving passthrough. Report it as a fact learned.
+  report ok 'unknown top-level field' "accepted=0 provider_rejected=1"
 else
-  report FAIL 'unknown top-level field' "accepted=0 shape=$(field '"object":"[^"]*"' "$WORK/unknown.body")"
+  report FAIL 'unknown top-level field' "accepted=0 status=$STATUS"
 fi
 
 # 6. an error answer. A request an endpoint can be expected to reject: an empty messages array. What

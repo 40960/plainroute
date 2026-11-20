@@ -30,6 +30,28 @@ var hopByHop = map[string]bool{
 
 func isHopByHop(name string) bool { return hopByHop[strings.ToLower(name)] }
 
+// connectionNominated returns the header names named by a Connection header.
+// RFC 7230 makes those names hop-by-hop for this message too, so they are removed
+// in both directions in addition to the fixed list.
+func connectionNominated(h http.Header) map[string]bool {
+	out := map[string]bool{}
+	for _, values := range h.Values("Connection") {
+		for _, name := range strings.Split(values, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			out[http.CanonicalHeaderKey(name)] = true
+		}
+	}
+	return out
+}
+
+func configHeaderReserved(name string) bool {
+	return isHopByHop(name) || strings.EqualFold(name, "Authorization") ||
+		strings.EqualFold(name, "Host") || strings.EqualFold(name, "Content-Length")
+}
+
 // copyRequestHeaders builds the header set for the upstream request.
 //
 // Authorization is always replaced with the key configured for the selected
@@ -42,10 +64,11 @@ func copyRequestHeaders(dst http.Header, src http.Header, cfg *config.Config, d 
 	for _, name := range cfg.Headers.Deny {
 		deny[http.CanonicalHeaderKey(name)] = true
 	}
+	nominated := connectionNominated(src)
 
 	for name, values := range src {
 		canonical := http.CanonicalHeaderKey(name)
-		if isHopByHop(canonical) {
+		if isHopByHop(canonical) || nominated[canonical] {
 			continue
 		}
 		if canonical == "Content-Length" || canonical == "Host" {
@@ -71,12 +94,8 @@ func copyRequestHeaders(dst http.Header, src http.Header, cfg *config.Config, d 
 		}
 	}
 
-	if d.APIKey != "" {
-		dst.Set("Authorization", "Bearer "+d.APIKey)
-	}
-
 	for name, value := range d.Headers {
-		if isHopByHop(name) {
+		if configHeaderReserved(name) {
 			continue
 		}
 		dst.Set(name, value)
@@ -86,10 +105,15 @@ func copyRequestHeaders(dst http.Header, src http.Header, cfg *config.Config, d 
 		dst.Set("X-Request-Id", requestID)
 	}
 	for name, value := range cfg.Headers.Extra {
-		if isHopByHop(name) {
+		if configHeaderReserved(name) {
 			continue
 		}
 		dst.Set(name, value)
+	}
+
+	// The target key is applied last, so no configured header can replace it.
+	if d.APIKey != "" {
+		dst.Set("Authorization", "Bearer "+d.APIKey)
 	}
 }
 
@@ -97,9 +121,10 @@ func copyRequestHeaders(dst http.Header, src http.Header, cfg *config.Config, d 
 // minus the per-connection headers. Content-Length is left to the transport so a
 // stream that ends early cannot be described by a wrong length.
 func copyResponseHeaders(dst http.Header, src http.Header) {
+	nominated := connectionNominated(src)
 	for name, values := range src {
 		canonical := http.CanonicalHeaderKey(name)
-		if isHopByHop(canonical) || canonical == "Content-Length" {
+		if isHopByHop(canonical) || nominated[canonical] || canonical == "Content-Length" {
 			continue
 		}
 		for _, value := range values {

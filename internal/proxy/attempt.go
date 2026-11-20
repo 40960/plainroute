@@ -53,9 +53,8 @@ func (h *Handler) attempt(
 
 	defer pool.Release(t)
 
-	// Being selectable means this target is not cooling down, so clear its
-	// cooldown gauge.
-	h.metrics.CooldownActive.WithLabelValues(pool.Route, t.Name).Set(0)
+	// Being selectable means this target is not cooling down. The cooldown gauge is
+	// refreshed from the pools at every scrape, so it does not need a latch here.
 	h.metrics.ActiveRequests.WithLabelValues(pool.Route, t.Name).Inc()
 	defer h.metrics.ActiveRequests.WithLabelValues(pool.Route, t.Name).Dec()
 
@@ -93,7 +92,7 @@ func (h *Handler) attempt(
 			return outcome{kind: "transport", fallbackable: true}
 		}
 		h.reject(w, r, http.StatusInternalServerError, "internal_error", "internal_error",
-			"could not build the upstream request", pool.Route, id)
+			"could not build the upstream request", pool.Route, id, true)
 		return outcome{delivered: true, kind: "transport"}
 	}
 	copyRequestHeaders(req.Header, r.Header, cfg, t, id)
@@ -101,6 +100,8 @@ func (h *Handler) attempt(
 	sendStart := h.now()
 	res, err := g.client.Do(req)
 	if err != nil {
+		// The transport was reached, so this is an attempt even when no status came back.
+		h.metrics.UpstreamAttempts.WithLabelValues(pool.Route, t.Name, "other").Inc()
 		return h.reportTransportFailure(w, r, idleCtx, idleFired, cfg, pool, t, id, allowFallback, err)
 	}
 	defer func() {
@@ -122,10 +123,6 @@ func (h *Handler) attempt(
 		if ra > 0 {
 			h.applyCooldown(cfg, pool, t, ra, http.StatusText(res.StatusCode), id)
 		}
-		h.log.Warn("upstream_error_status", "request_id", id, "route", pool.Route,
-			"target", t.Name, "status", res.StatusCode,
-			"ttft_ms", durationMs(h.now().Sub(sendStart)))
-
 		if allowFallback {
 			return outcome{kind: "status", fallbackable: true}
 		}
@@ -134,14 +131,17 @@ func (h *Handler) attempt(
 		// PlainRoute changes here is Retry-After: the gateway reports the window it actually
 		// applied, which is the value it received when the clamp is off, and the clamp when the
 		// received value exceeded it.
-		w.Header().Set("X-Request-Id", id)
 		copyResponseHeaders(w.Header(), res.Header)
+		w.Header().Set("X-Request-Id", id)
 		if ra > 0 {
 			w.Header().Set("Retry-After", retryAfterSeconds(ra))
 		}
 		w.WriteHeader(res.StatusCode)
-		written := h.copyBody(w, res.Body, cfg, stream)
-		h.metrics.Observe(pool.Route, t.Name, res.StatusCode, stream, h.now().Sub(start), h.now().Sub(sendStart), written)
+		written, ttft := h.copyBody(w, r, idleCtx, idleFired, cfg, pool, t, id, res.Body, stream, sendStart)
+		h.metrics.Observe(pool.Route, t.Name, res.StatusCode, stream, h.now().Sub(start), ttft, written)
+		h.log.Warn("upstream_error_status", "request_id", id, "route", pool.Route,
+			"target", t.Name, "status", res.StatusCode,
+			"ttft_ms", durationMs(ttft), "bytes", written)
 		return outcome{delivered: true, kind: "status"}
 	}
 
@@ -149,96 +149,61 @@ func (h *Handler) attempt(
 
 	buf := make([]byte, 32*1024)
 
-	// Read the first chunk before committing, so a stream that fails immediately is
-	// reported as an error instead of an empty successful response. The read is
-	// clamped to the response cap, so one large chunk cannot overshoot it.
-	n, err := readUpTo(res.Body, buf, cfg.Server.MaxResponseBytes)
-	if n == 0 && err != nil && !errors.Is(err, io.EOF) {
-		kind := classifyStreamError(r, idleCtx, idleFired, err)
-		h.metrics.UpstreamErrors.WithLabelValues(pool.Route, t.Name, kind).Inc()
-		if kind == "stream_idle" {
-			h.metrics.StreamAborts.WithLabelValues(pool.Route, t.Name, kind).Inc()
-		}
-		if kind == "client_gone" {
-			h.metrics.ClientDisconnects.WithLabelValues(pool.Route, t.Name).Inc()
-			return outcome{delivered: true, kind: kind}
-		}
-		if dur := cfg.Routing.Cooldown.Timeout.Std(); dur > 0 {
-			h.applyCooldown(cfg, pool, t, dur, kind, id)
-		}
-		if allowFallback {
-			return outcome{kind: kind, fallbackable: true}
-		}
-		h.reject(w, r, http.StatusBadGateway, "upstream_empty_response", "upstream_error",
-			"upstream closed before sending a response body", pool.Route, id)
-		return outcome{delivered: true, kind: kind}
-	}
-
-	ttft := h.now().Sub(sendStart)
-
-	w.Header().Set("X-Request-Id", id)
-	copyResponseHeaders(w.Header(), res.Header)
-	w.WriteHeader(res.StatusCode)
-
+	// One loop handles the first chunk and the rest. A read that returns bytes and an
+	// error writes those bytes before the error is handled, so a transport error that
+	// arrives with data is never swallowed. Headers are committed only after the first
+	// byte, which keeps an immediate failure reportable as an error and lets a configured
+	// fallback still run before anything is written.
 	var written int64
-	if n > 0 {
-		if _, werr := w.Write(buf[:n]); werr != nil {
-			h.metrics.ClientDisconnects.WithLabelValues(pool.Route, t.Name).Inc()
-			h.log.Warn("client_disconnect", "request_id", id, "route", pool.Route,
-				"target", t.Name, "bytes", written, "error", werr)
-			return outcome{delivered: true, kind: "client_gone"}
-		}
-		written += int64(n)
-		h.flush(w, stream)
-	}
-
+	var ttft time.Duration
+	first := true
 	for {
-		if written >= cfg.Server.MaxResponseBytes {
-			h.metrics.StreamAborts.WithLabelValues(pool.Route, t.Name, "response_limit").Inc()
-			h.log.Warn("response_limit_reached", "request_id", id, "route", pool.Route,
-				"target", t.Name, "bytes", written)
-			return outcome{delivered: true, kind: "response_limit"}
-		}
-
 		idleTimer.Reset(cfg.Timeouts.StreamIdle.Std())
-
-		n, err := readUpTo(res.Body, buf, cfg.Server.MaxResponseBytes-written)
-		if errors.Is(err, errResponseLimit) {
-			h.metrics.StreamAborts.WithLabelValues(pool.Route, t.Name, "response_limit").Inc()
-			h.log.Warn("response_limit_reached", "request_id", id, "route", pool.Route,
-				"target", t.Name, "bytes", written)
-			return outcome{delivered: true, kind: "response_limit"}
+		n, err := readBudget(res.Body, buf, cfg.Server.MaxResponseBytes-written)
+		if first && n > 0 {
+			ttft = h.now().Sub(sendStart)
+			copyResponseHeaders(w.Header(), res.Header)
+			w.Header().Set("X-Request-Id", id)
+			w.WriteHeader(res.StatusCode)
+			first = false
 		}
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				h.metrics.ClientDisconnects.WithLabelValues(pool.Route, t.Name).Inc()
-				h.log.Warn("client_disconnect", "request_id", id, "route", pool.Route,
-					"target", t.Name, "bytes", written, "error", werr)
+				h.noteClientGone(pool, t, id, written, werr)
 				return outcome{delivered: true, kind: "client_gone"}
 			}
 			written += int64(n)
 			h.flush(w, stream)
-			continue
+		}
+		if errors.Is(err, errResponseLimit) {
+			h.noteResponseLimit(pool, t, id, written)
+			return outcome{delivered: true, kind: "response_limit"}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			kind := classifyStreamError(r, idleCtx, idleFired, err)
-			h.metrics.UpstreamErrors.WithLabelValues(pool.Route, t.Name, kind).Inc()
-			if kind == "stream_idle" {
-				h.metrics.StreamAborts.WithLabelValues(pool.Route, t.Name, kind).Inc()
-				if dur := cfg.Routing.Cooldown.Timeout.Std(); dur > 0 {
-					h.applyCooldown(cfg, pool, t, dur, kind, id)
+			kind := h.noteStreamError(r, idleCtx, idleFired, cfg, pool, t, id, err, written)
+			if first {
+				if kind == "client_gone" {
+					return outcome{delivered: true, kind: kind}
 				}
+				if allowFallback {
+					return outcome{kind: kind, fallbackable: true}
+				}
+				h.reject(w, r, http.StatusBadGateway, "upstream_empty_response", "upstream_error",
+					"upstream closed before sending a response body", pool.Route, id, false)
+				return outcome{delivered: true, kind: kind}
 			}
-			if kind == "client_gone" {
-				h.metrics.ClientDisconnects.WithLabelValues(pool.Route, t.Name).Inc()
-			}
-			h.log.Warn("stream_ended_early", "request_id", id, "route", pool.Route,
-				"target", t.Name, "kind", kind, "bytes", written, "error", err)
 			return outcome{delivered: true, kind: kind}
 		}
+	}
+	if first {
+		// A clean empty response still needs a status line and the gateway request id.
+		copyResponseHeaders(w.Header(), res.Header)
+		w.Header().Set("X-Request-Id", id)
+		w.WriteHeader(res.StatusCode)
+		ttft = h.now().Sub(sendStart)
 	}
 
 	duration := h.now().Sub(start)
@@ -277,7 +242,7 @@ func (h *Handler) reportTransportFailure(w http.ResponseWriter, r *http.Request,
 			return outcome{kind: "stream_idle", fallbackable: true}
 		}
 		h.reject(w, r, http.StatusGatewayTimeout, "stream_idle", "upstream_error",
-			"upstream stopped sending data", pool.Route, id)
+			"upstream stopped sending data", pool.Route, id, false)
 		return outcome{delivered: true, kind: "stream_idle"}
 	}
 
@@ -308,7 +273,7 @@ func (h *Handler) reportTransportFailure(w http.ResponseWriter, r *http.Request,
 	if kind == "timeout" {
 		status = http.StatusGatewayTimeout
 	}
-	h.reject(w, r, status, "upstream_error", "upstream_error", "upstream request failed", pool.Route, id)
+	h.reject(w, r, status, "upstream_error", "upstream_error", "upstream request failed", pool.Route, id, false)
 	return outcome{delivered: true, kind: kind}
 }
 
@@ -345,35 +310,95 @@ func (h *Handler) applyCooldown(cfg *config.Config, pool *routing.Pool, t *routi
 		"reason", reason, "seconds", int64(dur/time.Second), "active", t.Active())
 }
 
-// copyBody copies without buffering the whole response. PlainRoute never holds a
-// model response in memory.
-func (h *Handler) copyBody(w http.ResponseWriter, body io.Reader, cfg *config.Config, stream bool) int64 {
+// noteClientGone is shared by the success and error-body paths: a client that left
+// is the same event whichever status the upstream answered with.
+func (h *Handler) noteClientGone(pool *routing.Pool, t *routing.Target, id string, written int64, err error) {
+	h.metrics.ClientDisconnects.WithLabelValues(pool.Route, t.Name).Inc()
+	h.log.Warn("client_disconnect", "request_id", id, "route", pool.Route,
+		"target", t.Name, "bytes", written, "error", err)
+}
+
+// noteResponseLimit is shared by both copy paths for the same reason.
+func (h *Handler) noteResponseLimit(pool *routing.Pool, t *routing.Target, id string, written int64) {
+	h.metrics.StreamAborts.WithLabelValues(pool.Route, t.Name, "response_limit").Inc()
+	h.log.Warn("response_limit_reached", "request_id", id, "route", pool.Route,
+		"target", t.Name, "bytes", written)
+}
+
+// noteStreamError classifies an upstream read failure, records it once for both copy
+// paths, and returns the kind so the caller can decide about fallback.
+func (h *Handler) noteStreamError(r *http.Request, idleCtx context.Context, idleFired *atomic.Bool,
+	cfg *config.Config, pool *routing.Pool, t *routing.Target, id string, err error, written int64) string {
+	kind := classifyStreamError(r, idleCtx, idleFired, err)
+	h.metrics.UpstreamErrors.WithLabelValues(pool.Route, t.Name, kind).Inc()
+	if kind == "stream_idle" {
+		h.metrics.StreamAborts.WithLabelValues(pool.Route, t.Name, kind).Inc()
+		if dur := cfg.Routing.Cooldown.Timeout.Std(); dur > 0 {
+			h.applyCooldown(cfg, pool, t, dur, kind, id)
+		}
+	}
+	if kind == "client_gone" {
+		h.metrics.ClientDisconnects.WithLabelValues(pool.Route, t.Name).Inc()
+	}
+	h.log.Warn("stream_ended_early", "request_id", id, "route", pool.Route,
+		"target", t.Name, "kind", kind, "bytes", written, "error", err)
+	return kind
+}
+
+// copyBody copies a non-2xx response with the same rules as the success path: no
+// buffering, byte-preserving, flush per read, and the same disconnect, limit and
+// stream-error instrumentation. TTFT is taken at the first byte, not after the body.
+func (h *Handler) copyBody(w http.ResponseWriter, r *http.Request, idleCtx context.Context, idleFired *atomic.Bool,
+	cfg *config.Config, pool *routing.Pool, t *routing.Target, id string, body io.Reader,
+	stream bool, sendStart time.Time) (int64, time.Duration) {
 	buf := make([]byte, 32*1024)
 	var written int64
+	var ttft time.Duration
 	for {
-		n, err := readUpTo(body, buf, cfg.Server.MaxResponseBytes-written)
+		n, err := readBudget(body, buf, cfg.Server.MaxResponseBytes-written)
 		if n > 0 {
+			if ttft == 0 {
+				ttft = h.now().Sub(sendStart)
+			}
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				return written
+				h.noteClientGone(pool, t, id, written, werr)
+				return written, ttft
 			}
 			written += int64(n)
 			h.flush(w, stream)
 		}
+		if errors.Is(err, errResponseLimit) {
+			h.noteResponseLimit(pool, t, id, written)
+			return written, ttft
+		}
 		if err != nil {
-			return written
+			if !errors.Is(err, io.EOF) {
+				h.noteStreamError(r, idleCtx, idleFired, cfg, pool, t, id, err, written)
+			}
+			return written, ttft
 		}
 	}
 }
 
-// readUpTo reads at most the remaining budget, so the configured response cap cannot
-// be overshot by one large read.
-func readUpTo(reader io.Reader, buf []byte, remaining int64) (int, error) {
-	n := int64(len(buf))
-	if remaining < n {
-		n = remaining
+// readBudget reads at most the remaining budget into buf. At a zero budget it
+// probes one byte without putting it in buf: over-limit is reported only when the
+// upstream actually has another byte, so a response that ends exactly at the cap
+// is complete and a cap+1 response is refused without sending that extra byte.
+func readBudget(reader io.Reader, buf []byte, remaining int64) (int, error) {
+	if remaining > 0 {
+		n := int64(len(buf))
+		if remaining < n {
+			n = remaining
+		}
+		return reader.Read(buf[:n])
 	}
-	if n <= 0 {
+	var probe [1]byte
+	n, err := reader.Read(probe[:])
+	if n > 0 {
 		return 0, errResponseLimit
 	}
-	return reader.Read(buf[:n])
+	if err != nil {
+		return 0, err
+	}
+	return 0, io.ErrNoProgress
 }

@@ -648,11 +648,12 @@ routes:
 	if len(body) != 200 {
 		t.Errorf("body length: got %d, want the whole 200 bytes of the cap", len(body))
 	}
-	if !strings.Contains(h.log.String(), "response_limit") {
-		t.Errorf("the cap was not recorded for a response that reached it: %s", h.log.String())
+	// Ending exactly at the cap is a complete response, not an aborted one.
+	if strings.Contains(h.log.String(), "response_limit") {
+		t.Errorf("a complete response ending at the cap was recorded as over-limit: %s", h.log.String())
 	}
-	if got := testutil.ToFloat64(h.metrics.StreamAborts.WithLabelValues("m", "a", "response_limit")); got != 1 {
-		t.Errorf("stream_aborts_total: got %v, want 1 for the cap that stopped copying", got)
+	if got := testutil.ToFloat64(h.metrics.StreamAborts.WithLabelValues("m", "a", "response_limit")); got != 0 {
+		t.Errorf("stream_aborts_total: got %v, want 0 for a response that ended at the cap", got)
 	}
 }
 

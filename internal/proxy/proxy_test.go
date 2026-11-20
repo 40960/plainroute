@@ -994,7 +994,7 @@ routes:
 	}
 
 	h.handler.reject(w, req, http.StatusTooManyRequests, "all_targets_cooling_down",
-		"rate_limit_error", "No healthy targets are currently available", "m", "test-id")
+		"rate_limit_error", "No healthy targets are currently available", "m", "test-id", true)
 
 	if got := testutil.ToFloat64(h.metrics.ClientDisconnects.WithLabelValues("m", metrics.NoTarget)); got != 1 {
 		t.Errorf("client_disconnects_total: got %v, want 1", got)

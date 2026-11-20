@@ -206,8 +206,12 @@ def main() -> int:
         routes=build_routes(models, args.keys, args.base_url, args.max_active),
     )
 
-    with open(args.out, "w") as handle:
+    # The file will hold real keys: create it 0600 from the start and enforce that
+    # mode even when an older file was there with a wider one.
+    fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
         handle.write(text)
+    os.chmod(args.out, 0o600)
 
     print(f"{len(models)} models x {args.keys} key slots = {len(models) * args.keys} targets -> {args.out}")
     print(f"source: {source}")

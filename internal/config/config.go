@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path"
@@ -260,6 +261,15 @@ func Parse(data []byte) (*Config, error) {
 	if err := dec.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	// One file is one document. A second document is never read, so accepting it
+	// would let a file say one thing and silently mean another.
+	var second any
+	if err := dec.Decode(&second); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("parse config: a second YAML document is not allowed")
+		}
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
 
 	applyDefaults(cfg)
 	if err := validate(cfg); err != nil {
@@ -315,7 +325,7 @@ func applyDefaults(cfg *Config) {
 		cfg.Routing.Cooldown.Max = &max
 	}
 
-	if cfg.Fallback.MaxHops <= 0 {
+	if cfg.Fallback.MaxHops == 0 {
 		cfg.Fallback.MaxHops = 1
 	}
 
@@ -411,6 +421,16 @@ func validate(cfg *Config) error {
 	if !strings.HasPrefix(cfg.Metrics.Path, "/") {
 		problems = append(problems, "metrics.path must start with /")
 	}
+	// The metrics page is an operational endpoint: it must not be shadowed by a
+	// built-in route, and it is served before the API key gate so it stays open.
+	switch cfg.Metrics.Path {
+	case "/v1/chat/completions", "/v1/models", "/healthz", "/health/live", "/readyz", "/health/ready":
+		problems = append(problems, "metrics.path collides with a built-in endpoint")
+	}
+
+	if cfg.Fallback.MaxHops < 0 {
+		problems = append(problems, "fallbacks.max_hops must be zero or positive, or absent for the default")
+	}
 	if cfg.Reload.Interval < 0 {
 		problems = append(problems, "config_reload.interval must be positive, or 0 for the default")
 	} else if cfg.Reload.Interval > 0 && cfg.Reload.Interval < MinReloadInterval() {
@@ -458,11 +478,13 @@ func validate(cfg *Config) error {
 				problems = append(problems, fmt.Sprintf("%s: model is required", where))
 			}
 
+			// A value that failed to parse can contain credentials or a query. Name the
+			// field and the violation only; never echo the value or the url.Error it made.
 			u, err := url.Parse(t.BaseURL)
 			if err != nil {
-				problems = append(problems, fmt.Sprintf("%s: base_url is not a valid URL: %v", where, err))
+				problems = append(problems, fmt.Sprintf("%s: base_url is not a valid URL", where))
 			} else if u.Scheme != "http" && u.Scheme != "https" {
-				problems = append(problems, fmt.Sprintf("%s: base_url %q must use http or https", where, t.BaseURL))
+				problems = append(problems, fmt.Sprintf("%s: base_url must use http or https", where))
 			} else if u.Host == "" {
 				problems = append(problems, fmt.Sprintf("%s: base_url must include a host", where))
 			} else if u.User != nil {
@@ -481,16 +503,27 @@ func validate(cfg *Config) error {
 				problems = append(problems, fmt.Sprintf("%s: max_active must be zero or positive", where))
 			}
 			for header, value := range t.Headers {
-				if header == "" || value == "" {
-					problems = append(problems, fmt.Sprintf("%s: header %q is empty", where, header))
+				if msg := headerProblem(header, value); msg != "" {
+					problems = append(problems, where+": "+msg)
 				}
 			}
 		}
 
+		// The runtime walks only Fallbacks[0]; a longer list would be parsed, validated
+		// and then partly ignored, which this project does not allow.
+		if len(route.Fallbacks) > 1 {
+			problems = append(problems, fmt.Sprintf("route %q has more than one fallback; a chain is written as A -> B -> C", routeName))
+		}
 		for _, fallback := range route.Fallbacks {
 			if _, ok := cfg.Routes[fallback]; !ok {
 				problems = append(problems, fmt.Sprintf("route %q fallback %q is not a configured route", routeName, fallback))
 			}
+		}
+	}
+
+	for header, value := range cfg.Headers.Extra {
+		if msg := headerProblem(header, value); msg != "" {
+			problems = append(problems, "headers.extra: "+msg)
 		}
 	}
 
@@ -505,6 +538,35 @@ func validate(cfg *Config) error {
 		return errors.New("invalid config:\n  - " + strings.Join(problems, "\n  - "))
 	}
 	return nil
+}
+
+// headerProblem validates a configured header against what the request path can
+// actually honour. A reserved or malformed name would be ignored or would fail the
+// request at runtime, so it is refused here instead.
+func headerProblem(name, value string) string {
+	if name == "" || value == "" {
+		return "header name and value are required"
+	}
+	if strings.ContainsAny(name+value, "\r\n\x00") {
+		return "header contains an invalid control character"
+	}
+	for _, c := range name {
+		if c <= ' ' || c >= 0x7f || !tokenChar(c) {
+			return "header name is not a valid field name"
+		}
+	}
+	switch strings.ToLower(name) {
+	case "authorization", "host", "content-length", "connection", "proxy-connection",
+		"keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
+		"transfer-encoding", "upgrade":
+		return "header name is reserved"
+	}
+	return ""
+}
+
+func tokenChar(c rune) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
+		strings.ContainsRune("!#$%&'*+-.^_`|~", c)
 }
 
 // checkFallbackCycles refuses a fallback graph that could loop forever.

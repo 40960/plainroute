@@ -215,7 +215,7 @@ routes:
 	}
 	for _, want := range []string{
 		"random", "connect", "mode", "level", "model is required",
-		"ftp", "credentials", "query", "api_key is required", "dup", "positive",
+		"http or https", "credentials", "query", "api_key is required", "dup", "positive",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error is missing %q:\n%v", want, err)

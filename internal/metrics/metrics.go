@@ -2,11 +2,11 @@
 
 // Package metrics exposes PlainRoute's counters and histograms on /metrics.
 //
-// The pair requests_total / upstream_attempts_total is the point of this package: the
-// upstream counter must not exceed one attempt per client request, which is what proves the
-// gateway does not amplify. The two need not match: a client that disconnects can leave an
-// attempt with no completed client request, and a rejection from gateway state raises the
-// request counter alone.
+// The pair requests_total / upstream_attempts_total is the point of this package: by default
+// the upstream counter cannot exceed one attempt per client request, which is what proves the
+// gateway does not amplify. A configured fallback chain is the only bounded exception. The two
+// need not match: a client that disconnects can leave an attempt with no completed client request,
+// and a rejection from gateway state raises the request counter alone.
 package metrics
 
 import (
@@ -24,7 +24,7 @@ import (
 const NoTarget = "none"
 
 // NoRoute is the label for a request the gateway answered on its own, with no route in
-// play, such as a health endpoint.
+// play, such as a rejected body or an invalid api key.
 const NoRoute = "none"
 
 // Metrics is the set of collectors PlainRoute exposes. Everything is a plain
@@ -63,7 +63,7 @@ func New() *Metrics {
 		}, []string{"route", "target", "status_class"}),
 		UpstreamAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_upstream_attempts_total",
-			Help: "Upstream requests actually sent. At most one per client request; a client that disconnects can leave an attempt with no completed client request.",
+			Help: "Upstream requests actually sent, including attempts whose transport failed. At most one per client request by default; a configured fallback is the bounded exception.",
 		}, []string{"route", "target", "status_class"}),
 		ActiveRequests: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "plainroute_active_requests",

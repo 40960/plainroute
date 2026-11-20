@@ -26,7 +26,9 @@ import (
 	"github.com/40960/plainroute/internal/routing"
 )
 
-const version = "0.1.0"
+// version is injected at build time by the Dockerfile and the release workflow. A
+// plain `go build` reports dev, which is what an unversioned development binary is.
+var version = "dev"
 
 func main() {
 	cfgPath := flag.String("config", envOr("PLAINROUTE_CONFIG", "config.yaml"), "path to the YAML config file")
@@ -146,20 +148,37 @@ func main() {
 			// file says now: `cfg` is the startup snapshot, and the handler's generations are for a
 			// request that is already running. That is why server.shutdown_grace is a restart-required
 			// field rather than a reloadable one, and the docs say the same.
-			handler.Drain()
-			deadline := time.Now().Add(cfg.Server.ShutdownGrace.Std())
-			if err := srv.Shutdown(context.Background()); err != nil {
-				log.Warn("shutdown_wait_failed", "error", err)
-			}
-			if !handler.Wait(deadline) {
-				log.Warn("shutdown_grace_exceeded", "grace", cfg.Server.ShutdownGrace.String())
-			}
-			if err := srv.Close(); err != nil {
-				log.Warn("close_failed", "error", err)
-			}
+			shutdownWithGrace(srv, handler, cfg.Server.ShutdownGrace.Std(),
+				func(msg string, args ...any) { log.Warn(msg, args...) })
 			log.Info("shutdown_complete")
 			return
 		}
+	}
+}
+
+// drainable is the part of the handler shutdown needs: stop accepting work, then
+// wait for in-flight requests up to a deadline.
+type drainable interface {
+	Drain()
+	Wait(deadline time.Time) bool
+}
+
+// shutdownWithGrace bounds both waits. http.Server.Shutdown alone can wait
+// forever for a streaming connection, which would make the handler's deadline
+// unreachable; its context gets the same deadline, and Close forces the stop.
+func shutdownWithGrace(srv *http.Server, d drainable, grace time.Duration, warn func(string, ...any)) {
+	d.Drain()
+	deadline := time.Now().Add(grace)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		warn("shutdown_wait_failed", "error", err)
+	}
+	if !d.Wait(deadline) {
+		warn("shutdown_grace_exceeded", "grace", grace)
+	}
+	if err := srv.Close(); err != nil {
+		warn("close_failed", "error", err)
 	}
 }
 

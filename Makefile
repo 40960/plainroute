@@ -13,7 +13,7 @@ all: build test
 
 build:
 	mkdir -p $(BIN)
-	go build -o $(BIN)/plainroute ./cmd/plainroute
+	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN)/plainroute ./cmd/plainroute
 	go build -o $(BIN)/plainroute-fakeupstream ./cmd/fakeupstream
 	go build -o $(BIN)/plainroute-bench ./cmd/bench
 

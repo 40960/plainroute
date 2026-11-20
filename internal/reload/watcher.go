@@ -181,13 +181,22 @@ func (w *Watcher) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-w.Force:
-			w.Tick()
+			w.handleForce(ticker)
 		case <-ticker.C:
 			w.Tick()
 			// The interval can have changed in the file, and the only place that learns it is a look.
 			ticker.Reset(w.Interval)
 		}
 	}
+}
+
+// handleForce is the manual look. A forced look can change the interval, so the
+// ticker is reset here: the new cadence starts now instead of after the old
+// ticker eventually fires. It is a method so a test can drive it without racing
+// the first tick of Run against a file write.
+func (w *Watcher) handleForce(ticker *time.Ticker) {
+	w.Tick()
+	ticker.Reset(w.Interval)
 }
 
 // Generation is the number of the configuration in force. It is reported so a reader can tell which

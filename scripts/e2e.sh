@@ -980,6 +980,7 @@ check "and the number of reload lines in the log did not grow" "1" \
 # break a working gateway. The last known good configuration is the one that was in force at the
 # failure, including the change the earlier reload applied: the check asks whether the route that the
 # successful reload added is still served, which only the running configuration can answer.
+before=$(reloadcount failed)
 cat > "$WORK/config.yaml" <<'YAML'
 routing:
   cooldown:
@@ -1006,7 +1007,7 @@ check "and the route the last good file added is still in use, which is what las
   "200" "$(post_to 8080 reloadcheck "$WORK/survived.txt")"
 
 # The same bad content is looked at again, and the same problem is reported once: a file that stays
-# bad is not a log line every second.
+# bad is not a log line every second. The baseline is read before the first extra look.
 before=$(reloadcount failed)
 for _ in 1 2 3 4 5; do kill -HUP "$GATEWAY_PID"; sleep 1; done
 check "the same bad content is not counted again" "$before" "$(reloadcount failed)"
@@ -1286,8 +1287,8 @@ write_config() { # the targets block for route hotpair
 
 # The file case 12 left on disk was refused, so writing a valid one here is the recovery case: content
 # coming back to being valid is a change, and a change is acted on without a signal.
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "content coming back to being valid is a change, and it is applied with no signal"   "$((baseline + 1))" "$(wait_for ok "$baseline")"
 
 # 17.1 a key is a value in the file, so rotating it is a change to the file, and the running process picks
@@ -1302,8 +1303,8 @@ targets='      - name: pair-1
         model: hotpair
         base_url: http://127.0.0.1:8091/pair-a
         api_key: e2e-hot-b'
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "the changed file is applied with no signal and no restart" "$((baseline + 1))" "$(wait_for ok "$baseline")"
 check "and the same process is still serving" "alive" "$(kill -0 "$GATEWAY_PID" 2>/dev/null && echo alive)"
 check "and its log has exactly one startup line, so this was not a restart" "1" \
@@ -1323,6 +1324,7 @@ not_has "and no reload line prints the content hash, in the whole form or the sh
 
 # 17.2 a file that decodes but does not validate is refused, and the configuration in force is the last
 # one that was valid. Only the running process can answer which configuration routes.
+baseline=$(reloadcount failed)
 cp "$WORK/config.yaml" "$WORK/config-good.yaml"
 cat > "$WORK/config.yaml" <<'YAML'
 server:
@@ -1339,7 +1341,6 @@ routes:
         api_key: PLAINROUTE_TEST_SECRET_DO_NOT_LEAK_918273645
 YAML
 
-baseline=$(reloadcount failed)
 check "a file that decodes but does not validate is reported" "$((baseline + 1))" "$(wait_for failed "$baseline")"
 check "and the gateway is still serving" "ok" "$(curl -s http://127.0.0.1:8080/healthz)"
 check "and the process is the same one, so a bad file did not take it down" "alive" \
@@ -1364,8 +1365,8 @@ sleep 4
 check "the same bad content is not counted again over three more looks" "$before_failed" "$(reloadcount failed)"
 check "and it is not logged again" "$before_lines" "$(grep -c 'config_reload_failed' "$WORK/gateway.log")"
 
-cp "$WORK/config-good.yaml" "$WORK/config.yaml"
 baseline=$(reloadcount ok)
+cp "$WORK/config-good.yaml" "$WORK/config.yaml"
 check "the file coming back to valid is applied, and the refusal did not replace what was in force" \
   "$((baseline + 1))" "$(wait_for ok "$baseline")"
 check "and the route the refused file named is still not in use, because that content was never applied" \
@@ -1378,8 +1379,8 @@ targets='      - name: pair-1
         model: hotmodel
         base_url: http://127.0.0.1:8091/pair-b
         api_key: e2e-hot-b'
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "the model and the base_url the changed file writes are the ones in use" \
   "$((baseline + 1))" "$(wait_for ok "$baseline")"
 check "and a request is served by the target the changed file names" "200" "$(post_to 8080 hotpair /dev/null)"
@@ -1397,8 +1398,8 @@ targets='      - name: pair-1
         model: hotmodel
         base_url: http://127.0.0.1:8091/pair-c
         api_key: e2e-hot-d'
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "the target the file added is applied" "$((baseline + 1))" "$(wait_for ok "$baseline")"
 
 stats
@@ -1410,8 +1411,8 @@ check "least_active keeps configuration order while both targets are idle" "$((f
 check "and the target the file added is not used yet" "$second" "$(count e2e-hot-d)"
 
 strategy=round_robin
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "the strategy the changed file names is applied" "$((baseline + 1))" "$(wait_for ok "$baseline")"
 before_b=$(count e2e-hot-b)
 for _ in 1 2; do post_to 8080 hotpair /dev/null > /dev/null; done
@@ -1424,8 +1425,8 @@ targets='      - name: pair-1
         model: hotmodel
         base_url: http://127.0.0.1:8091/pair-b
         api_key: e2e-hot-b'
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "the target the file removed is applied" "$((baseline + 1))" "$(wait_for ok "$baseline")"
 stats
 before=$(count e2e-hot-d)
@@ -1461,8 +1462,8 @@ check "the stream reached the upstream, so it was in flight when the file change
 has "and the first frame arrived before the change, which is what makes the frame that follows the one read after it" 'frame one' "$(cat "$WORK/held.txt")"
 
 cap=10
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "the cap the changed file names is applied while that stream is still running" \
   "$((baseline + 1))" "$(wait_for ok "$baseline")"
 
@@ -1476,8 +1477,8 @@ check "and that request cost no upstream call, so the answer came from the state
   "$((base_held + 1))" "$(count e2e-hot-c)"
 
 held_cap=2
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "the value the changed file writes is applied while the stream still holds a slot" \
   "$((baseline + 1))" "$(wait_for ok "$baseline")"
 check "and the next request fits under it, which only the state that is still holding the slot can say" \
@@ -1504,8 +1505,8 @@ targets='      - name: pair-1
         model: hotmodel
         base_url: http://127.0.0.1:8091/pair-f
         api_key: e2e-hot-f'
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "the first version of the file for this run is applied" "$((baseline + 1))" "$(wait_for ok "$baseline")"
 
 stats
@@ -1518,6 +1519,8 @@ targets='      - name: pair-1
         model: hotmodel
         base_url: http://127.0.0.1:8091/pair-g
         api_key: e2e-hot-g'
+base_f=$(count e2e-hot-f)
+baseline=$(reloadcount ok)
 write_config "$targets"
 
 # The run is sent over a window longer than one reload interval, so the swap lands inside it: a run that
@@ -1527,9 +1530,7 @@ write_config "$targets"
 mixed=0
 seen_f=0
 seen_g=0
-base_f=$(count e2e-hot-f)
 base_g=$(count e2e-hot-g)
-baseline=$(reloadcount ok)
 end=$((SECONDS + 3))
 while [ "$SECONDS" -lt "$end" ]; do
   status=$(post_to 8080 hotpair /dev/null)
@@ -1588,15 +1589,15 @@ check "and the process did not listen" "" "$(curl -s --max-time 3 http://127.0.0
 # 17.7 the caller key rotates the same way: the gate is a value in the file, so changing it changes the
 # gate for new requests, and the process is still the same process.
 caller_key=e2e-caller-old
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "the gate is applied from the file without a signal" "$((baseline + 1))" "$(wait_for ok "$baseline")"
 check "a request without a key is refused" "401" "$(caller none)"
 check "a request with the key the file names is served" "200" "$(caller e2e-caller-old)"
 
 caller_key=e2e-caller-new
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "the caller key is rotated by the watcher" "$((baseline + 1))" "$(wait_for ok "$baseline")"
 check "and the key the file no longer names no longer opens the gate" "401" "$(caller e2e-caller-old)"
 check "and the key the file now names does" "200" "$(caller e2e-caller-new)"
@@ -1611,8 +1612,8 @@ check "and the same process served both" "alive" "$(kill -0 "$GATEWAY_PID" 2>/de
 # these checks read: the answer for a request can only come from the configuration that is in force,
 # so an answer on the key the refused file names would mean part of a refused file was applied.
 caller_key=
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "the gate is turned off from the file, so these checks send one request each" \
   "$((baseline + 1))" "$(wait_for ok "$baseline")"
 
@@ -1623,9 +1624,9 @@ targets='      - name: pair-1
         model: hotmodel
         base_url: http://127.0.0.1:8091/pair-g
         api_key: e2e-hot-h'
+baseline=$(reloadcount restart_required)
 write_config "$targets"
 refused_hash=$(sha_of "$WORK/config.yaml")
-baseline=$(reloadcount restart_required)
 check "a change to a field the process captured at startup is refused as a whole" \
   "$((baseline + 1))" "$(wait_for restart_required "$baseline")"
 
@@ -1678,8 +1679,8 @@ not_has "and no reload line prints the content hash, in the whole form or the sh
 # applied: refusing a change did not freeze the watcher, and the generation moved only for the content
 # that was acted on.
 listen=127.0.0.1:8080
-write_config "$targets"
 baseline=$(reloadcount ok)
+write_config "$targets"
 check "a file that only changes a field the process can act on is applied" \
   "$((baseline + 1))" "$(wait_for ok "$baseline")"
 stats
@@ -1696,6 +1697,7 @@ check "and it is still the same process, so this was not a restart" "1" \
 # removed for having no reader are refused by name, so a live file that writes one gets an answer that
 # says the field does not exist, and the configuration in force keeps serving. A loader that accepted
 # and ignored such a field would tell an operator the file said something.
+baseline=$(reloadcount failed)
 cp "$WORK/config.yaml" "$WORK/config-good-179.yaml"
 cat > "$WORK/config.yaml" <<YAML
 server:
@@ -1714,7 +1716,6 @@ routes:
         api_key: e2e-hot-179
 YAML
 
-baseline=$(reloadcount failed)
 check "a live file that writes a field the schema does not have is reported" "$((baseline + 1))" "$(wait_for failed "$baseline")"
 refusal=$(grep 'config_reload_failed' "$WORK/gateway.log" | tail -1)
 has "the refusal names the field it refused" 'field retry not found' "$refusal"
@@ -1730,8 +1731,8 @@ stats
 check "and that request went to the key the last good file named, so nothing from the refused file was applied" \
   "$((base_179 + 1))" "$(count e2e-hot-h)"
 check "and the key only the refused file names was never used" "0" "$(count e2e-hot-179)"
-cp "$WORK/config-good-179.yaml" "$WORK/config.yaml"
 baseline=$(reloadcount ok)
+cp "$WORK/config-good-179.yaml" "$WORK/config.yaml"
 check "and the file coming back to fields the schema has is applied, so the refusal did not freeze the watcher" \
   "$((baseline + 1))" "$(wait_for ok "$baseline")"
 

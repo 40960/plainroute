@@ -27,7 +27,8 @@ endorsement or an affiliation.
 
 ## What it does
 
-- One upstream attempt per client request. Never more.
+- One upstream attempt per client request by default; a configured fallback chain is the only
+  explicit, bounded exception. The gateway never retries the same target or key on its own.
 - Load balancing across targets behind one route name: one selection per request,
   `least_active` by default or `round_robin`, and ties keep config order. There is
   no failover inside a single request, and no balancing between two route names.
@@ -670,8 +671,8 @@ checked while nothing in the request path read it, so it is gone and writing `re
 fails at load. Once bytes are on the wire, there is no taking them back, and that is the
 rule any retry rule here would have to keep.
 
-There is a regression test for this: 50 client requests must never produce more than 50
-upstream attempts, and the metrics must report the same numbers.
+There is a regression test for this: by default 50 client requests must never produce more
+than 50 upstream attempts. A configured fallback chain is the explicit exception.
 
 ## With a client that owns retry, such as OpenCode
 
@@ -702,8 +703,8 @@ curl -s http://127.0.0.1:8080/metrics | grep -E 'requests_total|upstream_attempt
 `requests_total` counts client requests and `upstream_attempts_total` counts upstream
 calls. Both grow with the traffic the client sends, including its retries, and they are
 kept apart so that retry traffic stays visible. The promise is an upper bound, not
-equality: one client request never causes more than one upstream attempt, but the two
-counters need not match. A client that disconnects can leave an upstream attempt with no
+equality: by default one client request never causes more than one upstream attempt, with a
+configured fallback chain as the bounded exception, but the two counters need not match. A client that disconnects can leave an upstream attempt with no
 counted client request, and a request the gateway answers from its own state adds to
 `requests_total` without contacting an upstream.
 
@@ -737,10 +738,10 @@ the image, so an image payload travels as bytes.
 
 | Metric | What it is |
 | --- | --- |
-| `plainroute_requests_total{route,target,status_class}` | Client requests handled |
-| `plainroute_upstream_attempts_total{route,target,status_class}` | Upstream requests actually sent |
+| `plainroute_requests_total{route,target,status_class}` | Client chat requests handled; operational endpoints are not counted |
+| `plainroute_upstream_attempts_total{route,target,status_class}` | Every attempt that reached the transport, including failures with no status (`other`) |
 | `plainroute_active_requests{route,target}` | Requests in flight per target |
-| `plainroute_target_in_cooldown{route,target}` | 1 while a target is cooling |
+| `plainroute_target_in_cooldown{route,target}` | 1 while a target is cooling now, rebuilt from the pools at each scrape |
 | `plainroute_cooldown_events_total{route,target,reason}` | Times a target was cooled down |
 | `plainroute_request_duration_seconds{route,target,stream}` | End to end duration, per request |
 | `plainroute_ttft_seconds{route,target}` | Time to the first upstream byte |
@@ -749,7 +750,7 @@ the image, so an image payload travels as bytes.
 | `plainroute_upstream_errors_total{route,target,kind}` | Upstream failures by kind |
 | `plainroute_client_disconnects_total{route,target}` | Clients that went away |
 | `plainroute_stream_aborts_total{route,target,reason}` | Streams ended by the gateway |
-| `plainroute_gateway_rejected_total{route,code}` | Requests the gateway answered from its own state |
+| `plainroute_gateway_rejected_total{route,code}` | Local rejections made without any upstream call; a synthesized 502/504 is not one |
 | `plainroute_config_reloads_total{outcome}` | Reloads that acted on changed content, by outcome. One count per distinct content: a file that stays bad is counted once, and a signal that changes nothing is not a reload |
 | `plainroute_in_flight_requests` | Requests being handled right now |
 | `go_goroutines`, `go_memstats_heap_alloc_bytes`, `process_resident_memory_bytes` | The process itself |
@@ -770,7 +771,8 @@ values are `transport`, `timeout`, `stream_idle`, `client_gone`.
 `requests_total` and `upstream_attempts_total` are kept separately on purpose. The bound
 `cmd/bench` checks is per client request: it reads both counters before and after a load
 run, and the upstream-attempt delta must not exceed the number of client requests it
-issued. The deltas need not be equal. A client that disconnects can leave an upstream
+issued times `-max-attempts-per-request` (default 1; raise it only when a fallback chain is
+configured). The deltas need not be equal. A client that disconnects can leave an upstream
 attempt with no counted client request, and a request the gateway rejects from its own
 state adds to `requests_total` alone. Those two cases are reported separately as
 `plainroute_client_disconnects_total` and `plainroute_gateway_rejected_total`, so a
@@ -848,7 +850,9 @@ signed keyless against the identity of the run that made it, which names the ref
 run started from, and the release names the version, the commit, the immutable digest,
 whether it is a pre-release, and the two verify commands a reader runs. The release body
 prints those commands with the ref of the run that published it, which is the tag for a
-tag build and the branch for a manual run.
+tag build and the branch for a manual run. The same name is injected into the binary at
+build time, so `plainroute --version` in a published image reports the published version;
+an ordinary `go build` reports `dev`.
 
 ## Security
 
@@ -901,7 +905,8 @@ Known and deliberate. These are not bugs to be fixed by adding complexity:
   travels to a target and no rule above covers them.
 - A response header is copied, not interpreted. The per-connection names are dropped and
   everything else arrives as the target wrote it, including a name this project does not
-  know.
+  know. The names listed in a `Connection` header are dropped too, in both directions, as
+  the protocol requires.
 
 ## Troubleshooting
 

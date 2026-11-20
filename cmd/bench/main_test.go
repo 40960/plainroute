@@ -32,7 +32,7 @@ plainroute_active_requests{route="demo",target="a"} 0
 plainroute_in_flight_requests 0
 `
 
-func captureGateway(t *testing.T, baseline, final string, issued int) string {
+func captureGateway(t *testing.T, baseline, final string, issued, maxAttempts int) string {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -40,7 +40,7 @@ func captureGateway(t *testing.T, baseline, final string, issued int) string {
 	}
 	old := os.Stdout
 	os.Stdout = w
-	printGateway(baseline, final, issued)
+	printGateway(baseline, final, issued, maxAttempts)
 	os.Stdout = old
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
@@ -53,12 +53,12 @@ func captureGateway(t *testing.T, baseline, final string, issued int) string {
 }
 
 func TestPrintGatewayUsesBaselineDeltasAndIssuedRequests(t *testing.T) {
-	out := captureGateway(t, metricsBaseline, metricsFinal, 4)
+	out := captureGateway(t, metricsBaseline, metricsFinal, 4, 1)
 	for _, want := range []string{
 		"plainroute_upstream_attempts_total",
 		"7 (+4)",
 		"no amplification",
-		"4 attempts since baseline for 4 client requests issued: ok",
+		"4 attempts since baseline for 4 requests x 1 allowed: ok",
 		"gateway rejected",
 		"+0 (auxiliary; answered from gateway state)",
 		"client disconnects",
@@ -69,10 +69,16 @@ func TestPrintGatewayUsesBaselineDeltasAndIssuedRequests(t *testing.T) {
 		}
 	}
 
-	out = captureGateway(t, metricsBaseline, metricsFinal, 3)
-	failLine := "4 attempts since baseline for 3 client requests issued: FAIL: " +
-		"more upstream attempts than client requests issued"
+	out = captureGateway(t, metricsBaseline, metricsFinal, 3, 1)
+	failLine := "4 attempts since baseline for 3 requests x 1 allowed: FAIL: " +
+		"more upstream attempts than client requests issued times max-attempts-per-request"
 	if !strings.Contains(out, failLine) {
 		t.Errorf("with three requests issued, output missing the FAIL verdict:\n%s", out)
+	}
+
+	// A configured fallback chain is an explicit bounded exception, not amplification.
+	out = captureGateway(t, metricsBaseline, metricsFinal, 3, 2)
+	if !strings.Contains(out, "4 attempts since baseline for 3 requests x 2 allowed: ok") {
+		t.Errorf("with two attempts allowed per request, output missing the ok verdict:\n%s", out)
 	}
 }

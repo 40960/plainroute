@@ -168,7 +168,7 @@ routes:
         api_key: key-a
         headers:
           X-Target-Header: target
-          Connection: close
+          X-Another-Header: another
 `))
 	if err != nil {
 		t.Fatalf("config: %v", err)
@@ -176,8 +176,8 @@ routes:
 
 	dst := http.Header{}
 	copyRequestHeaders(dst, http.Header{}, cfg, &routing.Target{Name: "a", APIKey: "key-a", Headers: map[string]string{
-		"X-Target-Header": "target",
-		"Connection":      "close",
+		"X-Target-Header":  "target",
+		"X-Another-Header": "another",
 	}}, "id-4")
 
 	if dst.Get("X-Target-Header") != "target" || dst.Get("X-Plainroute-Test") != "gateway" {

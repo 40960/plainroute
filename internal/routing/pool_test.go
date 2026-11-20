@@ -265,6 +265,93 @@ func TestConcurrentSelection(t *testing.T) {
 	}
 }
 
+// One Pick is one linearized decision: four simultaneous round-robin picks over four
+// healthy targets must use each target once, not read the same cursor four times.
+func TestConcurrentRoundRobinPicksAreDistinct(t *testing.T) {
+	testConcurrentPicksAreDistinct(t, StrategyRoundRobin)
+}
+
+// least_active makes the same promise about its active counts: a snapshot taken
+// before another goroutine reserves a slot must not be used after that reservation.
+func TestConcurrentLeastActivePicksAreDistinct(t *testing.T) {
+	testConcurrentPicksAreDistinct(t, StrategyLeastActive)
+}
+
+func testConcurrentPicksAreDistinct(t *testing.T, strategy string) {
+	t.Helper()
+	clock := &fakeClock{t: time.Unix(1700000000, 0)}
+	pool := testPool(strategy, []string{"a", "b", "c", "d"}, clock)
+
+	const workers = 4
+	picked := make(chan string, workers)
+	var ready, done sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		ready.Add(1)
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			d, ok := pool.Pick()
+			if ok {
+				picked <- d.Name
+			}
+		}()
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+	close(picked)
+
+	seen := map[string]int{}
+	for name := range picked {
+		seen[name]++
+	}
+	if len(seen) != workers {
+		t.Errorf("%s with %d concurrent picks used %d distinct targets: %v", strategy, workers, len(seen), seen)
+	}
+	for name, n := range seen {
+		if n != 1 {
+			t.Errorf("%s: target %s was picked %d times, want once", strategy, name, n)
+		}
+	}
+}
+
+func TestUnavailabilityDistinguishesCoolingFromCapacity(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(1700000000, 0)}
+	pool := testPool(StrategyLeastActive, []string{"a", "b"}, clock)
+
+	// One target at capacity and one cooling are different reasons and must not be
+	// reported as the same condition.
+	pool.Targets[0].MaxActive = 1
+	a, ok := pool.Pick()
+	if !ok || a.Name != "a" {
+		t.Fatalf("pick a: ok=%v", ok)
+	}
+	pool.Cooldown(pool.Targets[1], 10*time.Second, "rate_limit")
+
+	cooling, busy, earliest := pool.Unavailability()
+	if !cooling || !busy {
+		t.Errorf("cooling=%v busy=%v, want both", cooling, busy)
+	}
+	if earliest != 10*time.Second {
+		t.Errorf("earliest recovery: got %v, want 10s", earliest)
+	}
+
+	pool.Release(a)
+	cooling, busy, earliest = pool.Unavailability()
+	if !cooling || busy || earliest != 10*time.Second {
+		t.Errorf("after release: cooling=%v busy=%v earliest=%v", cooling, busy, earliest)
+	}
+
+	clock.Advance(11 * time.Second)
+	cooling, busy, earliest = pool.Unavailability()
+	if cooling || busy || earliest != 0 {
+		t.Errorf("after recovery: cooling=%v busy=%v earliest=%v", cooling, busy, earliest)
+	}
+}
+
 // TestStateSurvivesReload checks that a config reload does not reset a cooldown
 // that is still in effect for a target that is still configured.
 func TestStateSurvivesReload(t *testing.T) {

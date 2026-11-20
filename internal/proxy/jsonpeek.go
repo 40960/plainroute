@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 )
 
 // peeked is what PlainRoute reads out of a request body. It is deliberately
@@ -40,6 +41,7 @@ func peekBody(data []byte) (*peeked, error) {
 	}
 
 	p := &peeked{}
+	seenModel := false
 	for dec.More() {
 		keyToken, err := dec.Token()
 		if err != nil {
@@ -62,6 +64,12 @@ func peekBody(data []byte) (*peeked, error) {
 
 		switch key {
 		case "model":
+			// Two model keys would route on one value while the upstream parser used
+			// another. Refuse the ambiguity instead of choosing a winner here.
+			if seenModel {
+				return nil, errors.New(`field "model" appears more than once`)
+			}
+			seenModel = true
 			var model string
 			if err := json.Unmarshal(raw, &model); err != nil {
 				return nil, errors.New(`field "model" must be a string`)
@@ -76,6 +84,19 @@ func peekBody(data []byte) (*peeked, error) {
 			// A non-boolean stream value is left alone: the gateway does not
 			// decide the response shape, the upstream content type does.
 		}
+	}
+
+	// More() stops before the closing brace. Consume it and require EOF after it, so
+	// neither trailing garbage nor a second top-level document can be accepted.
+	closing, err := dec.Token()
+	if err != nil {
+		return nil, errors.New("request body is not a complete JSON object")
+	}
+	if delim, ok := closing.(json.Delim); !ok || delim != '}' {
+		return nil, errors.New("request body is not a complete JSON object")
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("request body must contain exactly one JSON object")
 	}
 
 	return p, nil

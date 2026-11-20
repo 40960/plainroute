@@ -171,7 +171,14 @@ type Status struct {
 // when nothing is selectable, which is the only decision the gateway makes for a
 // request: the caller then reports the failure to the client instead of trying
 // another target.
+//
+// The whole decision is one critical section: the selectable set, the cursor or
+// active counts it reads, the reservation and the cursor advance are all done
+// under p.mu. Release and Cooldown share the same boundary, so no caller can
+// change a target's state between the snapshot and TryAcquire.
 func (p *Pool) Pick() (*Target, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if len(p.Targets) == 0 {
 		return nil, false
 	}
@@ -189,9 +196,7 @@ func (p *Pool) Pick() (*Target, bool) {
 
 	switch p.strategy {
 	case StrategyRoundRobin:
-		p.mu.Lock()
 		start := p.cursor
-		p.mu.Unlock()
 		// Rotate the selectable candidates so the next request starts where the last one
 		// left off. Cooling and unavailable targets are not candidates at all: they leave
 		// the rotation while out and re-enter it when they become selectable again.
@@ -211,9 +216,7 @@ func (p *Pool) Pick() (*Target, bool) {
 	for _, t := range candidates {
 		if t.state.TryAcquire(t.MaxActive, now) {
 			if p.strategy == StrategyRoundRobin {
-				p.mu.Lock()
 				p.cursor = (p.cursor + 1) % len(p.Targets)
-				p.mu.Unlock()
 			}
 			return t, true
 		}
@@ -222,12 +225,19 @@ func (p *Pool) Pick() (*Target, bool) {
 }
 
 // Release gives back the slot taken by Pick. Callers must always call it.
+// It shares Pick's lock so a release cannot change an active count between
+// Pick's snapshot and its reservation.
 func (p *Pool) Release(t *Target) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	t.state.Release()
 }
 
-// Cooldown marks a target unavailable for dur.
+// Cooldown marks a target unavailable for dur. It shares Pick's lock for the
+// same reason as Release.
 func (p *Pool) Cooldown(t *Target, dur time.Duration, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	t.state.CoolDown(dur, reason, p.now())
 }
 
@@ -247,6 +257,30 @@ func (p *Pool) EarliestRecovery() (time.Duration, bool) {
 		}
 	}
 	return earliest, found
+}
+
+// Unavailability says why nothing in this pool can be picked right now.
+// cooling is true when at least one target is in cooldown, busy is true when a
+// target is out only because it is at max_active, and earliest is the soonest
+// real cooldown recovery (zero when no target is cooling). A busy target has no
+// computable recovery time: State does not record when its in-flight requests
+// began, so the caller must not invent a Retry-After for it.
+func (p *Pool) Unavailability() (cooling, busy bool, earliest time.Duration) {
+	now := p.now()
+	found := false
+	for _, t := range p.Targets {
+		if remaining, coolingNow := t.state.Remaining(now); coolingNow {
+			cooling = true
+			if !found || remaining < earliest {
+				earliest, found = remaining, true
+			}
+			continue
+		}
+		if t.MaxActive > 0 && t.state.Active() >= t.MaxActive {
+			busy = true
+		}
+	}
+	return cooling, busy, earliest
 }
 
 // Snapshot returns the current state of every target in configuration order.

@@ -49,10 +49,11 @@ func main() {
 	stream := flag.Bool("stream", true, "ask for a streamed response")
 	timeout := flag.Duration("timeout", 30*time.Second, "per request timeout")
 	metricsPath := flag.String("metrics", "/metrics", "metrics path on the gateway")
+	maxAttempts := flag.Int("max-attempts-per-request", 1, "maximum upstream attempts a single client request may cause; raise it only when the configured fallback chain is enabled")
 	flag.Parse()
 
-	if *requests <= 0 || *concurrency <= 0 {
-		fmt.Fprintln(os.Stderr, "bench: requests and concurrency must be positive")
+	if *requests <= 0 || *concurrency <= 0 || *maxAttempts <= 0 {
+		fmt.Fprintln(os.Stderr, "bench: requests, concurrency and max-attempts-per-request must be positive")
 		os.Exit(1)
 	}
 
@@ -101,7 +102,7 @@ func main() {
 		fmt.Printf("\ngateway metrics: %v\n", err)
 		return
 	}
-	printGateway(baseline, page, *requests)
+	printGateway(baseline, page, *requests, *maxAttempts)
 }
 
 func doRequest(client *http.Client, url string, body []byte) outcome {
@@ -202,7 +203,7 @@ func printReport(results []outcome, elapsed time.Duration, requests, concurrency
 // baseline read before the load. The bound is on the upstream-attempt delta against the
 // requests this client issued; a rejection or a disconnect can make the two counters drift
 // apart without breaching it. Every gauge must be back at zero after the load stopped.
-func printGateway(baselinePage, page string, clientRequestsIssued int) {
+func printGateway(baselinePage, page string, clientRequestsIssued, maxAttemptsPerRequest int) {
 	samples := parseExposition(page)
 
 	wanted := []string{
@@ -242,18 +243,19 @@ func printGateway(baselinePage, page string, clientRequestsIssued int) {
 	}
 
 	// This client knows how many requests it issued, and the baseline keeps traffic from
-	// earlier runs out of the comparison. The bound is one upstream attempt per request
-	// issued; equality is not expected, because a rejection or a disconnect can change one
-	// counter without the other.
+	// earlier runs out of the comparison. The bound is maxAttemptsPerRequest per request
+	// issued: one for the default gateway, more only when an explicit fallback chain is
+	// configured. The flag is never guessed from the gateway config.
 	attempts := totals["plainroute_upstream_attempts_total"] - before["plainroute_upstream_attempts_total"]
+	limit := float64(clientRequestsIssued * maxAttemptsPerRequest)
 	verdict := "ok"
 	if seen["plainroute_upstream_attempts_total"] == 0 {
 		verdict = "FAIL: no upstream attempts counter on the metrics page"
-	} else if attempts > float64(clientRequestsIssued) {
-		verdict = "FAIL: more upstream attempts than client requests issued"
+	} else if attempts > limit {
+		verdict = "FAIL: more upstream attempts than client requests issued times max-attempts-per-request"
 	}
-	fmt.Printf("  %-36s %d attempts since baseline for %d client requests issued: %s\n",
-		"no amplification", int64(attempts), clientRequestsIssued, verdict)
+	fmt.Printf("  %-36s %d attempts since baseline for %d requests x %d allowed: %s\n",
+		"no amplification", int64(attempts), clientRequestsIssued, maxAttemptsPerRequest, verdict)
 
 	// These explain a difference between the two counters; they are not part of the bound.
 	fmt.Printf("  %-36s +%d (auxiliary; answered from gateway state)\n", "gateway rejected",

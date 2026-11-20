@@ -127,6 +127,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g := h.Generation()
 	cfg := g.cfg
 
+	// The metrics page is an operational endpoint and stays ungated. It is checked before
+	// the API key gate and before the built-in routes; startup validation rejects a path
+	// that collides with a built-in, so this branch cannot shadow one.
+	// The cooldown gauge is a current-state observable, not a latch: rebuild it from
+	// the pools on every scrape so an expired cooldown reads 0 even with no traffic.
+	if cfg.Metrics.On() && r.URL.Path == cfg.Metrics.Path {
+		h.refreshCooldownGauge()
+		h.metrics.Handler().ServeHTTP(w, r)
+		return
+	}
+
 	// The api key a caller presents is checked on the API endpoints only. Health,
 	// readiness and the metrics page stay open, because a monitoring system that cannot
 	// authenticate is the ordinary case and nothing on those pages is secret.
@@ -153,24 +164,34 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if cfg.Metrics.On() && r.URL.Path == cfg.Metrics.Path {
-		h.metrics.Handler().ServeHTTP(w, r)
-		return
-	}
-
 	h.reject(w, r, http.StatusNotFound, "page_not_found", "invalid_request_error",
-		"unknown path "+r.URL.Path, metrics.NoRoute, "")
+		"unknown path "+r.URL.Path, metrics.NoRoute, "", true)
+}
+
+// refreshCooldownGauge rebuilds the current-state gauge from the pools at scrape
+// time. Nothing in the request path has to notice that a cooldown expired: the
+// next scrape simply reports the state the targets are in now.
+func (h *Handler) refreshCooldownGauge() {
+	h.metrics.CooldownActive.Reset()
+	for _, pool := range h.Generation().registry.Pools() {
+		for _, st := range pool.Snapshot() {
+			value := 0.0
+			if st.Cooling {
+				value = 1
+			}
+			h.metrics.CooldownActive.WithLabelValues(pool.Route, st.Target).Set(value)
+		}
+	}
 }
 
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, g *generation) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		h.reject(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "invalid_request_error",
-			"models listing requires GET", metrics.NoRoute, "")
+			"models listing requires GET", metrics.NoRoute, "", true)
 		return
 	}
 
 	id := requestID(r)
-	h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "models_list").Inc()
 
 	// A route entry is the name a client can send. It is not a model: the models belong to the
 	// targets, so the listing reports the name and the distinct models it can be served by. When a
@@ -216,7 +237,7 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, g *genera
 	body, err := json.Marshal(map[string]any{"object": "list", "data": entries})
 	if err != nil {
 		h.reject(w, r, http.StatusInternalServerError, "internal_error", "internal_error",
-			"model listing failed", metrics.NoRoute, id)
+			"model listing failed", metrics.NoRoute, id, true)
 		return
 	}
 
@@ -231,7 +252,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, g *generati
 	cfg := g.cfg
 	if r.Method != http.MethodPost {
 		h.reject(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "invalid_request_error",
-			"chat completions require POST", metrics.NoRoute, "")
+			"chat completions require POST", metrics.NoRoute, "", true)
 		return
 	}
 
@@ -249,22 +270,19 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, g *generati
 		if errors.Is(err, errBodyTooLarge) {
 			status, code = http.StatusRequestEntityTooLarge, "request_body_too_large"
 		}
-		h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, code).Inc()
-		h.reject(w, r, status, code, "invalid_request_error", err.Error(), metrics.NoRoute, id)
+		h.reject(w, r, status, code, "invalid_request_error", err.Error(), metrics.NoRoute, id, true)
 		return
 	}
 
 	peek, err := peekBody(body)
 	if err != nil {
-		h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "invalid_json").Inc()
 		h.reject(w, r, http.StatusBadRequest, "invalid_json", "invalid_request_error",
-			err.Error(), metrics.NoRoute, id)
+			err.Error(), metrics.NoRoute, id, true)
 		return
 	}
 	if peek.Model == "" {
-		h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "missing_model").Inc()
 		h.reject(w, r, http.StatusBadRequest, "missing_model", "invalid_request_error",
-			`field "model" is required`, metrics.NoRoute, id)
+			`field "model" is required`, metrics.NoRoute, id, true)
 		return
 	}
 
@@ -272,10 +290,9 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, g *generati
 	if !ok {
 		// The name a client sent cannot be a metric label: a client can send any string, and a
 		// label value is never removed. The name is logged instead, so it stays diagnosable.
-		h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "model_not_found").Inc()
 		h.log.Warn("route_not_found", "request_id", id, "requested", peek.Model)
 		h.reject(w, r, http.StatusNotFound, "model_not_found", "invalid_request_error",
-			"model "+peek.Model+" is not a configured route", metrics.NoRoute, id)
+			"model "+peek.Model+" is not a configured route", metrics.NoRoute, id, true)
 		return
 	}
 
@@ -298,11 +315,11 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, g *generati
 		}
 	}
 
-	var lastUnavailable *routing.Pool
+	unavailable := make([]*routing.Pool, 0, len(chain))
 	for i, pool := range chain {
 		target, ok := pool.Pick()
 		if !ok {
-			lastUnavailable = pool
+			unavailable = append(unavailable, pool)
 			continue
 		}
 
@@ -323,27 +340,42 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, g *generati
 		)
 	}
 
-	// Nothing was reachable. The gateway does not contact an upstream here: it
-	// answers from its own routing state, and Retry-After comes from the
-	// target that recovers first.
-	if lastUnavailable == nil {
+	// Nothing was reachable. The gateway does not contact an upstream here: it answers
+	// from its own routing state. Every pool in the chain that refused a pick contributes
+	// to the answer, so a busy fallback cannot be reported as a cooling primary or vice
+	// versa, and Retry-After is the soonest real cooldown recovery across the chain.
+	if len(unavailable) == 0 {
 		h.reject(w, r, http.StatusInternalServerError, "internal_error", "internal_error",
-			"no target state", metrics.NoRoute, id)
+			"no target state", metrics.NoRoute, id, true)
 		return
 	}
 
-	remaining, cooling := lastUnavailable.EarliestRecovery()
-	if !cooling {
-		remaining = cfg.Routing.Cooldown.Status[429].Std()
+	cooling, busy, earliest := false, false, time.Duration(0)
+	for _, pool := range unavailable {
+		c, b, remaining := pool.Unavailability()
+		cooling = cooling || c
+		busy = busy || b
+		if c && (earliest == 0 || remaining < earliest) {
+			earliest = remaining
+		}
 	}
-	w.Header().Set("Retry-After", retryAfterSeconds(remaining))
-	h.metrics.GatewayRejected.WithLabelValues(lastUnavailable.Route, "all_targets_cooling_down").Inc()
-	h.reject(w, r, http.StatusTooManyRequests, "all_targets_cooling_down", "rate_limit_error",
-		"No healthy targets are currently available", lastUnavailable.Route, id)
+	code := "all_targets_cooling_down"
+	if busy {
+		// Capacity has no computable recovery time, so no Retry-After is invented for it.
+		code = "all_targets_busy"
+	} else {
+		w.Header().Set("Retry-After", retryAfterSeconds(earliest))
+	}
+	route := primary.Route
+	h.reject(w, r, http.StatusTooManyRequests, code, "rate_limit_error",
+		"No healthy targets are currently available", route, id, true)
 }
 
-func (h *Handler) reject(w http.ResponseWriter, r *http.Request, status int, code, typ, message, route, id string) {
+func (h *Handler) reject(w http.ResponseWriter, r *http.Request, status int, code, typ, message, route, id string, local bool) {
 	h.metrics.RequestsTotal.WithLabelValues(route, metrics.NoTarget, metrics.StatusClass(status)).Inc()
+	if local {
+		h.metrics.GatewayRejected.WithLabelValues(route, code).Inc()
+	}
 	h.log.Warn("gateway_response", "request_id", id, "route", route, "status", status, "code", code)
 	if id != "" {
 		w.Header().Set("X-Request-Id", id)
@@ -371,10 +403,9 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, g *generatio
 		return true
 	}
 
-	h.metrics.GatewayRejected.WithLabelValues(metrics.NoRoute, "invalid_api_key").Inc()
 	h.log.Warn("unauthenticated_request", "request_id", id, "path", r.URL.Path)
 	h.reject(w, r, http.StatusUnauthorized, "invalid_api_key", "authentication_error",
-		"invalid api key", metrics.NoRoute, id)
+		"invalid api key", metrics.NoRoute, id, true)
 	return false
 }
 

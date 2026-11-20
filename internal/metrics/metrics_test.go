@@ -32,6 +32,14 @@ plainroute_gateway_rejected_total{code="model_not_found",route="none"} 1
 		t.Errorf("gateway_rejected: %v", err)
 	}
 
+	m.UpstreamAttempts.WithLabelValues(NoRoute, NoTarget, "other").Inc()
+	if err := testutil.CollectAndCompare(m.UpstreamAttempts, strings.NewReader(`# HELP plainroute_upstream_attempts_total Upstream requests actually sent, including attempts whose transport failed. At most one per client request by default; a configured fallback is the bounded exception.
+# TYPE plainroute_upstream_attempts_total counter
+plainroute_upstream_attempts_total{route="none",status_class="other",target="none"} 1
+`), "plainroute_upstream_attempts_total"); err != nil {
+		t.Errorf("upstream_attempts: %v", err)
+	}
+
 	// The help text lists the kinds this collector can actually be incremented with. Two
 	// values people expect are not among them: an upstream that answered with an error status
 	// is counted by upstream_attempts_total with its status class, and a response cap is a

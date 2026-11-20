@@ -24,7 +24,8 @@ handleChat
   2. peekBody      read model and stream from the document, nothing else
   3. Registry.Lookup(route name)               → pool
   4. pool.Pick()                               → one target, or nothing
-  5. attempt()                                 → exactly one upstream request
+  5. attempt()                                 → one upstream request per target, plus at most one
+                                                 further target when a fallback is configured
   6. copy the response bytes, flush per read chunk
   7. report what happened to metrics and the log
 ```
@@ -167,10 +168,10 @@ right for every provider, so the choice is between holding a target out longer t
 asked, and asking the same key again too soon: 10s sits between a per-second limiter and a
 per-minute limiter, which is the narrowest band a default can cover, and it is long enough that
 the same key is not asked again on every request. For a key that was told to slow down, the
-window is also the interval at which that key is asked again. A larger default does not reduce the number of upstream requests, because one client
-request is one upstream attempt whenever a target is selectable: it moves answers from the
-provider to the gateway, which is what this project calls a bug when the provider would have
-answered. An operator who knows their provider's window should set it explicitly rather than
+window is also the interval at which that key is asked again. A larger default does not reduce the number of upstream requests, because by default one client
+request is one upstream attempt whenever a target is selectable; a configured fallback is the
+bounded exception. It moves answers from the provider to the gateway, which is what this project
+calls a bug when the provider would have answered. An operator who knows their provider's window should set it explicitly rather than
 rely on the prior.
 
 **Cooldown state survives a reload.** Target state is keyed by route and target name in a
@@ -271,6 +272,6 @@ after the load stops.
 
 Anything that adds behaviour to the request path: a retry, a cache, a queue, a guardrail, a
 response transform, a provider SDK. Each of those either changes the bytes on the wire or
-turns one client request into more than one upstream request, which is the line the project
-does not cross. If such a feature is genuinely wanted, it belongs in the README limitations
-section as future work.
+turns one client request into more than one upstream request. The project does that only
+through an explicitly configured fallback chain; every other such feature belongs in the
+README limitations section as future work.
