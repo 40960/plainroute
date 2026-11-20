@@ -302,32 +302,44 @@ jobs:
           printf '%s' "$out" > attestation.json
           python3 - <<'PY'
           import base64, json
-          # cosign v2.6.5 answers with a DSSE envelope: `payloadType` and a base64 in-toto
-          # statement, not an array with a `payload.optionalPayload` field as this file once read.
-          # The statement is decoded here, and the facts checked are the ones the build job wrote
-          # into the SBOM.
-          d = json.load(open('attestation.json'))
-          if isinstance(d, list):
-              d = d[0]
-          if d.get('payloadType') != 'application/vnd.in-toto+json':
-              raise SystemExit('the attestation is not an in-toto statement: %r' % d.get('payloadType'))
-          stmt = json.loads(base64.b64decode(d['payload']))
-          if not str(stmt.get('_type', '')).startswith('https://in-toto.io/Statement/'):
-              raise SystemExit('the payload is not an in-toto statement: %r' % stmt.get('_type'))
-          predicate = stmt.get('predicate') or {}
-          components = [c for c in predicate.get('packages', []) if c.get('name')]
-          if not str(predicate.get('spdxVersion', '')).startswith('SPDX'):
-              raise SystemExit('the attestation is not an SPDX document: %r' % predicate.get('spdxVersion'))
-          if not components:
-              raise SystemExit('the attestation names no components')
-          # The release attaches the file the build wrote; it has to be the document the attestation
-          # carries, not merely another SPDX document that happens to verify against this run.
+          # cosign prints one JSON envelope per matching attestation, one per line. This run
+          # attached the same SBOM to the tag and to the digest, so a reader verifying by digest
+          # gets two envelopes of the same document; a single-object fixture hid that. The text is
+          # read as a stream of JSON values, and every envelope it contains has to be the document
+          # the build wrote.
+          decoder = json.JSONDecoder()
+          text = open('attestation.json').read()
+          envelopes, pos = [], 0
+          while pos < len(text):
+              while pos < len(text) and text[pos].isspace():
+                  pos += 1
+              if pos >= len(text):
+                  break
+              d, pos = decoder.raw_decode(text, pos)
+              envelopes.append(d)
+          if not envelopes:
+              raise SystemExit('cosign printed no attestation to verify')
           written = json.load(open('sbom.spdx.json'))
           written_components = [c for c in written.get('packages', []) if c.get('name')]
-          if (predicate.get('spdxVersion') != written.get('spdxVersion')
-                  or len(components) != len(written_components)):
-              raise SystemExit('the attestation and the attached SBOM are different documents')
-          print(stmt['_type'], predicate['spdxVersion'], len(components), 'components')
+          for d in envelopes:
+              if d.get('payloadType') != 'application/vnd.in-toto+json':
+                  raise SystemExit('the attestation is not an in-toto statement: %r' % d.get('payloadType'))
+              stmt = json.loads(base64.b64decode(d['payload']))
+              if not str(stmt.get('_type', '')).startswith('https://in-toto.io/Statement/'):
+                  raise SystemExit('the payload is not an in-toto statement: %r' % stmt.get('_type'))
+              predicate = stmt.get('predicate') or {}
+              components = [c for c in predicate.get('packages', []) if c.get('name')]
+              if not str(predicate.get('spdxVersion', '')).startswith('SPDX'):
+                  raise SystemExit('the attestation is not an SPDX document: %r' % predicate.get('spdxVersion'))
+              if not components:
+                  raise SystemExit('the attestation names no components')
+              # The release attaches the file the build wrote; it must be the document the
+              # attestation carries, not merely another SPDX document that happens to verify against
+              # this run.
+              if (predicate.get('spdxVersion') != written.get('spdxVersion')
+                      or len(components) != len(written_components)):
+                  raise SystemExit('the attestation and the attached SBOM are different documents')
+          print(len(envelopes), 'attestations,', predicate['spdxVersion'], len(components), 'components')
           PY
 
       - uses: actions/upload-artifact@v4

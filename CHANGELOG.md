@@ -224,7 +224,7 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   environment a runner would give rather than on a runner: breaking a release workflow
   to prove a check can fail would put an artifact in a registry, which is not what a
   falsification should cost.
-- Six real runs of `release.yml` each showed a reading that was an assumption rather
+- Seven real runs of `release.yml` each showed a reading that was an assumption rather
   than a reading of the tool. The first asked buildx for `.Digest` and `.Platform`; its
   template has neither, so the image reached the registry unsigned. The second printed
   the JSON: `platform` is an object with `os` and `architecture`, not a string, and the
@@ -252,10 +252,16 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   by a different cosign: this workflow's v2 signature prints `cosign container image
   signature`, not the newer URI. The fixture is now the signature this workflow's own
   run printed, and the step reads the certificate Subject and Issuer out of that answer
-  as well, so a signature verified for another run is named as such. Fixtures are
-  printed answers, not inventions, and each reading was shown to fail once against a
-  deliberate break, in a shell with a stand for the tool: breaking a release workflow on
-  a runner would leave another artifact in the registry.
+  as well, so a signature verified for another run is named as such. The seventh run
+  verified both signatures and then failed on the attestation text: cosign prints one
+  JSON envelope per matching attestation, and this workflow attaches the same SBOM to
+  the tag and to the digest, so a reader verifying by digest gets two. A single-object
+  fixture hid that, and the run's log hid the 269-kilobyte line holding both envelopes
+  until the raw job log was read. The step now reads the text as a stream of JSON values
+  and checks every envelope against the document the build wrote. Fixtures are printed
+  answers, not inventions, and each reading was shown to fail once against a deliberate
+  break, in a shell with a stand for the tool: breaking a release workflow on a runner
+  would leave another artifact in the registry.
 
 - `scripts/smoke-openai-compatible.sh` checks a live OpenAI-compatible endpoint the way
   a client sees it: the model list, a non-stream answer, a streamed answer, a tool call,
