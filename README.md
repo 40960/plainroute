@@ -32,6 +32,10 @@ endorsement or an affiliation.
 - Load balancing across targets behind one route name: one selection per request,
   `least_active` by default or `round_robin`, and ties keep config order. There is
   no failover inside a single request, and no balancing between two route names.
+- Session affinity is a best-effort prefix-cache locality hint: a request carrying a
+  verified session header prefers one target for its route. If that target is busy or
+  cooling, the request spills immediately to the configured strategy and prefers the
+  original target again on the next request. No session table, no message parsing.
 - Per-target cooldown: for an error status the window is
   `routing.cooldown.status[<code>]` when the upstream did not send a `Retry-After`, and
   the value the upstream sent when it did, clamped by `routing.cooldown.max`, which 0
@@ -518,6 +522,24 @@ auth:
   12/0/0/0, because sequential traffic never overlaps and every request ties on "fewest in
   flight". If the limit you care about is per key, spread with `round_robin`; if it is per
   connection pool, `least_active` is the closer fit. Under real concurrency both converge.
+- A request carrying `X-Session-Affinity`, `X-Session-Id` or `X-Opencode-Session` has a
+  deterministic preferred target for its route: SHA-256 rendezvous hashing over `route
+  || session || targetName`. The hash uses names, so target reorder, a restart and a hot
+  reload with unchanged names keep the mapping; adding or removing a target only remaps
+  the sessions that preferred it. Two or more supported headers with the same value are
+  normal; conflicting, oversized or invalid values are refused with a 400 before any
+  upstream call. The value is never logged or used as a label.
+- Affinity is sticky preference, not a sticky prison. A selectable preferred target is
+  reserved directly (`sticky`). A cooling or capacity-full preferred target is never
+  waited on or retried locally: the request spills immediately to the configured
+  strategy (`spill`), and the next request prefers the original target again. Requests
+  without a usable session header use the original strategy unchanged (`none`).
+- This is a prefix-cache locality optimization, not a correctness guarantee or a claim
+  about a hosted provider. NVIDIA self-hosted NIM documents KV cache reuse, but the
+  hosted integrate.api.nvidia.com behavior and cache partitioning are not a public
+  contract; a cache miss only costs prefill work and TTFT, because every chat request
+  carries the full conversation. No session content is stored, and no message text is
+  read to infer a session.
 - Cooldown for an error status is `routing.cooldown.status[<code>]` when the upstream
   sent no `Retry-After`. When it sent one, that value wins unless the clamp is off (0),
   and `routing.cooldown.max` clamps it so a hostile or broken value cannot make a target
@@ -752,6 +774,7 @@ the image, so an image payload travels as bytes.
 | `plainroute_client_disconnects_total{route,target}` | Clients that went away |
 | `plainroute_stream_aborts_total{route,target,reason}` | Streams ended by the gateway |
 | `plainroute_gateway_rejected_total{route,code}` | Local rejections made without any upstream call; a synthesized 502/504 is not one |
+| `plainroute_affinity_total{route,result}` | Routing decisions: `sticky`, `spill` or `none`; no session value is a label |
 | `plainroute_config_reloads_total{outcome}` | Reloads that acted on changed content, by outcome. One count per distinct content: a file that stays bad is counted once, and a signal that changes nothing is not a reload |
 | `plainroute_in_flight_requests` | Requests being handled right now |
 | `go_goroutines`, `go_memstats_heap_alloc_bytes`, `process_resident_memory_bytes` | The process itself |

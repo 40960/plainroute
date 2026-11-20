@@ -62,6 +62,20 @@ metric names it exposes. Changing a metric name is a breaking change and goes in
   change for a file that wrote them; the project is early and carries no compatibility burden, so
   the fields are removed rather than implemented to make the documents true.
 
+### Features
+
+- Session affinity is a best-effort prefix-cache locality hint. A request carrying
+  `X-Session-Affinity`, `X-Session-Id` or `X-Opencode-Session` gets a deterministic
+  preferred target for its route, chosen by a SHA-256 rendezvous hash over route,
+  session value and target name. Conflicting or malformed values are refused locally. A
+  selectable preferred target is reserved (`sticky`); a cooling or full one is skipped
+  immediately and the existing strategy chooses (`spill`), with no internal retry or
+  queue. The next request prefers the original target again. No header means no change
+  from v0.1.0. No session table, no message parsing, no session value in logs or metric
+  labels. The new `plainroute_affinity_total{route,result}` counts `sticky`, `spill` and
+  `none` decisions. Hosted NVIDIA cache behavior is not a public contract, so this
+  optimizes locality only.
+
 ### Behaviour
 
 - The config file is watched, so a change is applied without a restart and without a

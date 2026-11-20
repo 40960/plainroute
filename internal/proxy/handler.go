@@ -257,6 +257,17 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, g *generati
 	}
 
 	id := requestID(r)
+
+	// Session affinity is a routing hint from explicit headers. It is read before
+	// any target is picked; conflicting or malformed metadata is a local rejection,
+	// never a reason to guess which session a request belongs to.
+	affinity, affinityCode := sessionAffinity(r.Header)
+	if affinityCode != "" {
+		h.reject(w, r, http.StatusBadRequest, affinityCode, "invalid_request_error",
+			"session affinity metadata is invalid", metrics.NoRoute, id, true)
+		return
+	}
+
 	start := h.now()
 
 	h.inflight.Add(1)
@@ -317,10 +328,17 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request, g *generati
 
 	unavailable := make([]*routing.Pool, 0, len(chain))
 	for i, pool := range chain {
-		target, ok := pool.Pick()
+		target, kind, ok := pool.PickWithAffinity(affinity)
 		if !ok {
 			unavailable = append(unavailable, pool)
 			continue
+		}
+		h.metrics.AffinityTotal.WithLabelValues(pool.Route, string(kind)).Inc()
+		if kind != routing.PickNone {
+			// The result and target are facts about this request's routing; the
+			// session value itself is never printed.
+			h.log.Info("affinity_decision", "request_id", id, "route", pool.Route,
+				"target", target.Name, "result", string(kind))
 		}
 
 		// A fallback is only possible while nothing has been written to the

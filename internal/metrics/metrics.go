@@ -44,6 +44,7 @@ type Metrics struct {
 	ClientDisconnects *prometheus.CounterVec
 	StreamAborts      *prometheus.CounterVec
 	GatewayRejected   *prometheus.CounterVec
+	AffinityTotal     *prometheus.CounterVec
 	Reloads           *prometheus.CounterVec
 	InFlight          prometheus.Gauge
 }
@@ -112,6 +113,10 @@ func New() *Metrics {
 			Name: "plainroute_gateway_rejected_total",
 			Help: "Requests answered by the gateway itself, without an upstream call.",
 		}, []string{"route", "code"}),
+		AffinityTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "plainroute_affinity_total",
+			Help: "Routing decisions by result: sticky and spill for requests with a session affinity key, none without one. Counted when a target is reserved, not for a local rejection.",
+		}, []string{"route", "result"}),
 		Reloads: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "plainroute_config_reloads_total",
 			Help: "Configuration reloads that acted on changed content, by outcome: ok, failed, restart_required. " +
@@ -129,7 +134,7 @@ func New() *Metrics {
 		m.RequestsTotal, m.UpstreamAttempts, m.ActiveRequests, m.CooldownEvents,
 		m.CooldownActive, m.Latency, m.TTFT, m.StreamDuration, m.BytesStreamed,
 		m.UpstreamErrors, m.ClientDisconnects, m.StreamAborts, m.GatewayRejected,
-		m.Reloads, m.InFlight,
+		m.AffinityTotal, m.Reloads, m.InFlight,
 	} {
 		reg.MustRegister(collector)
 	}

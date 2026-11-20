@@ -237,6 +237,17 @@ selectable candidates. A cooling or otherwise unavailable target is not a candid
 it is out and re-enters the rotation when it becomes selectable again; it does not keep a
 reserved position.
 
+**Session affinity is a hint, not a correctness rule.** Three verified OpenCode headers
+carry one session identity; PlainRoute accepts them when they agree and refuses conflicting
+or malformed values before any upstream call. A route-scoped rendezvous hash of
+`route || session || targetName` picks a preferred target without a session table or any
+message inspection. A selectable preferred target is reserved (`sticky`); a cooling or
+full one is skipped immediately and the existing strategy chooses (`spill`), with no wait
+and no local retry. The next request prefers the original target again. With no header the
+two strategies behave exactly as before. The only metric label is `result`, never the
+session value. Hosted NVIDIA cache behavior is not a public contract, so this is a
+best-effort prefix-cache locality optimization rather than a cache-hit guarantee.
+
 **`TryAcquire` checks and increments under one lock**, so two goroutines cannot both believe
 they own the same slot. Every path that acquires must release: normal completion, an upstream
 error, a timeout, a client disconnect.

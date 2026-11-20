@@ -167,6 +167,17 @@ type Status struct {
 	Reason    string
 }
 
+// PickKind says what decided a reservation. PickNone means the request had no
+// usable session affinity and the configured strategy chose; the other two are
+// only possible with an affinity key.
+type PickKind string
+
+const (
+	PickNone   PickKind = "none"
+	PickSticky PickKind = "sticky"
+	PickSpill  PickKind = "spill"
+)
+
 // Pick selects a healthy target and reserves a slot on it. It returns false
 // when nothing is selectable, which is the only decision the gateway makes for a
 // request: the caller then reports the failure to the client instead of trying
@@ -177,10 +188,24 @@ type Status struct {
 // under p.mu. Release and Cooldown share the same boundary, so no caller can
 // change a target's state between the snapshot and TryAcquire.
 func (p *Pool) Pick() (*Target, bool) {
+	t, _, ok := p.pick("")
+	return t, ok
+}
+
+// PickWithAffinity first tries the deterministic preferred target for this
+// route and session. If that target is selectable it is reserved (sticky); if
+// it is cooling or at capacity the request spills immediately to the existing
+// strategy, with no waiting and no local retry. The next request prefers the
+// same target again: spilling does not rebind the session.
+func (p *Pool) PickWithAffinity(session string) (*Target, PickKind, bool) {
+	return p.pick(session)
+}
+
+func (p *Pool) pick(session string) (*Target, PickKind, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.Targets) == 0 {
-		return nil, false
+		return nil, PickNone, false
 	}
 	now := p.now()
 
@@ -191,7 +216,20 @@ func (p *Pool) Pick() (*Target, bool) {
 		}
 	}
 	if len(candidates) == 0 {
-		return nil, false
+		return nil, PickNone, false
+	}
+
+	kind := PickNone
+	if session != "" {
+		kind = PickSpill
+		preferred := preferredTarget(p.Route, session, p.Targets)
+		if preferred != nil && preferred.state.Available(preferred.MaxActive, now) &&
+			preferred.state.TryAcquire(preferred.MaxActive, now) {
+			if p.strategy == StrategyRoundRobin {
+				p.cursor = (p.cursor + 1) % len(p.Targets)
+			}
+			return preferred, PickSticky, true
+		}
 	}
 
 	switch p.strategy {
@@ -218,10 +256,10 @@ func (p *Pool) Pick() (*Target, bool) {
 			if p.strategy == StrategyRoundRobin {
 				p.cursor = (p.cursor + 1) % len(p.Targets)
 			}
-			return t, true
+			return t, kind, true
 		}
 	}
-	return nil, false
+	return nil, PickNone, false
 }
 
 // Release gives back the slot taken by Pick. Callers must always call it.
